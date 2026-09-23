@@ -202,15 +202,26 @@ function gradesToken_() {
   return token;
 }
 
+/**
+ * The web app's /exec address: study.webAppUrl, or the one Google reports.
+ * Run from the editor, Google often reports only the test (/dev) address or
+ * nothing, so pasting it into Settings.gs is the reliable way.
+ */
 function webAppUrl_(settings) {
   var fromSettings = String(settings.study.webAppUrl || '').trim();
   if (fromSettings) return fromSettings;
-  var service = ScriptApp.getService();
-  var url = service && service.getUrl();
+  var url = null;
+  try {
+    url = ScriptApp.getService().getUrl();
+  } catch (e) {
+    url = null;
+  }
   if (url && /\/exec$/.test(url)) return url;
   throw new Error(
-    'Deploy the script as a web app first (README: "Grades bookmark"), then paste its Web app URL ' +
-      'into study.webAppUrl in Settings.gs.'
+    "The script doesn't know its web app address yet. In Apps Script, click Deploy → Manage deployments " +
+      '(or Deploy → New deployment → Web app if there is none yet), copy the Web app URL that ends in /exec, ' +
+      "and add it to the study section of Settings.gs like this: webAppUrl: 'https://script.google.com/macros/s/.../exec', " +
+      'then save and run makeGradesBookmarklet again.'
   );
 }
 

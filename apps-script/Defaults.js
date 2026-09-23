@@ -175,7 +175,8 @@ var DEFAULTS_ = {
     targetGrade: 93,
     // Typed-in grades, e.g. { 'AP Biology': 84 }. They win over the bookmark's.
     grades: {},
-    // Web app URL for the grades bookmark (see README). Usually found automatically.
+    // The web app's URL for the grades bookmark: Deploy → Manage deployments →
+    // Web app URL (ends in /exec). See the README.
     webAppUrl: '',
     // Usual study time per kind at your target grade; sessions start at most
     // daysAhead days before the due date. spacing: 'spaced' bunches sessions

@@ -112,11 +112,17 @@ test('a visit without grades explains how to fix the bookmark', () => {
   assert.equal(env.properties.B2C_GRADES, undefined);
 });
 
+test('a pasted test (/dev) address is caught with an explanation', () => {
+  const { gas } = setUp({ study: { webAppUrl: 'https://script.google.com/macros/s/abc/dev' } });
+  assert.throws(() => gas.loadSettings_(), /ending in \/exec \(that one ends in \/dev: it's the test address/);
+});
+
 test('the web app URL comes from Settings or the deployment', () => {
   const { gas, env } = setUp();
-  assert.throws(() => gas.webAppUrl_(gas.loadSettings_()), /Deploy the script as a web app first/);
+  const missing = /doesn't know its web app address yet\. In Apps Script, click Deploy → Manage deployments .*copy the Web app URL that ends in \/exec, and add it to the study section of Settings\.gs like this: webAppUrl:/;
+  assert.throws(() => gas.webAppUrl_(gas.loadSettings_()), missing);
   env.webAppUrl = 'https://script.google.com/macros/s/abc/dev';
-  assert.throws(() => gas.webAppUrl_(gas.loadSettings_()), /Deploy the script as a web app first/);
+  assert.throws(() => gas.webAppUrl_(gas.loadSettings_()), missing);
   env.webAppUrl = WEB_APP;
   assert.equal(gas.webAppUrl_(gas.loadSettings_()), WEB_APP);
   gas.SETTINGS.study = { webAppUrl: 'https://script.google.com/a/macros/school.org/s/xyz/exec' };
@@ -178,8 +184,7 @@ function runBookmarklet(code, { api = BLACKBAUD_API, status = {}, answers = [] }
 }
 
 test('makeGradesBookmarklet() prints a bookmark with the web app URL and secret', () => {
-  const { gas, env } = setUp();
-  env.webAppUrl = WEB_APP;
+  const { gas, env } = setUp({ study: { webAppUrl: ` ${WEB_APP} ` } });
   gas.makeGradesBookmarklet();
   const code = env.logs.join('\n').split('\n').find((l) => l.startsWith('javascript:'));
   assert.ok(code);

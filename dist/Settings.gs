@@ -61,6 +61,10 @@ var SETTINGS = {
     grades: {
       // 'AP Biology': 84,
     },
+
+    // For the "Send grades" bookmark: your Web app URL from Deploy → Manage
+    // deployments (it ends in /exec).
+    webAppUrl: '',
   },
 
   // AI for the study planner. Your Ollama API key does NOT go here: add it in

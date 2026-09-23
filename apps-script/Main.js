@@ -240,7 +240,10 @@ function studySettingsProblems_(s, problems) {
     });
   }
   if (study.webAppUrl && !/^https:\/\/script\.google\.com\/.+\/exec$/.test(String(study.webAppUrl).trim())) {
-    problems.push('study.webAppUrl should be the Web app URL from Deploy, ending in /exec.');
+    problems.push(
+      'study.webAppUrl should be the Web app URL from Deploy → Manage deployments, ending in /exec' +
+        (/\/dev\s*$/.test(String(study.webAppUrl)) ? " (that one ends in /dev: it's the test address, which only works for you while signed in)." : '.')
+    );
   }
   var kinds = isPlainObject_(study.kinds) ? study.kinds : {};
   if (!isPlainObject_(study.kinds)) problems.push('study.kinds must look like { test: { minutes: 180 } }.');

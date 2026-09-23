@@ -131,11 +131,15 @@ Blackbaud only shows grades while you're signed in, so a bookmark reads them in 
 1. In Apps Script, click **Deploy → New deployment**. Click the gear next to "Select type" and
    choose **Web app**. Set *Execute as* to **Me** and *Who has access* to **Anyone**, click
    **Deploy**, and allow the permissions.
-2. Run `makeGradesBookmarklet`. The log shows a long line starting with `javascript:`. Copy the
+2. Copy the **Web app URL** it shows (it ends in `/exec`; you can find it again under
+   **Deploy → Manage deployments**). In `Settings.gs`, paste it between the quotes of `webAppUrl`
+   in the `study` section, like `webAppUrl: 'https://script.google.com/macros/s/…/exec',`, and
+   save.
+3. Run `makeGradesBookmarklet`. The log shows a long line starting with `javascript:`. Copy the
    whole line.
-3. Right-click your bookmarks bar and choose **Add page…** (Chrome, Edge) or **Add Bookmark…**
+4. Right-click your bookmarks bar and choose **Add page…** (Chrome, Edge) or **Add Bookmark…**
    (Firefox). Name it "Send grades" and paste the line as the URL.
-4. Sign in to Blackbaud and click the bookmark. It shows your class grades and asks before sending
+5. Sign in to Blackbaud and click the bookmark. It shows your class grades and asks before sending
    them. A new tab confirms "Saved your grades".
 
 Click it again whenever your grades change. Run `showGrades` to see what the planner is using.
@@ -166,6 +170,7 @@ along with the secret built into your bookmark. Keep the bookmark private. If it
 | `study.busyCalendars` | `[]` | Other calendars to plan around, by name. Your main calendar always counts. |
 | `study.targetGrade` | `93` | The grade at which an assessment gets its usual study time. |
 | `study.grades` | `{}` | Typed-in grades, like `{ 'AP Biology': 84 }`. These win over the bookmark's. |
+| `study.webAppUrl` | `''` | Your Web app URL (ends in `/exec`), for the grades bookmark. |
 | `study.kinds` | see `Defaults.js` | For each kind: usual `minutes`, how many `daysAhead` to start, and `spacing` (`'spaced'` or `'even'`). |
 | `study.calendarName` | `'Study Plan'` | The calendar the sessions go in. |
 | `study.reminderMinutes` | `10` | Popup reminder before each session (`0` for none). |

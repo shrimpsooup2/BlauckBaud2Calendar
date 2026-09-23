@@ -236,7 +236,7 @@ test('study settings are checked', () => {
     /study\.hours\.holidays is not a day I know/,
     /study\.sessionMinutes must be a number from 15 to 240/,
     /study\.grades\["AP Biology"\] must be a number like 84/,
-    /study\.webAppUrl should be the Web app URL from Deploy/,
+    /study\.webAppUrl should be the Web app URL from Deploy → Manage deployments, ending in \/exec\./,
     /study\.kinds\.test\.daysAhead must be from 0 to 30/,
     /study\.kinds\.test\.spacing must be 'spaced' or 'even'/,
     /ai\.model must name a model/,
