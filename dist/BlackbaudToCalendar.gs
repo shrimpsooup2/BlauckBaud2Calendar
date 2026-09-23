@@ -1858,25 +1858,45 @@ function makeGradesBookmarklet() {
 function checkAi() {
   var settings = loadSettings_();
   var ai = settings.ai;
-  var apiKey = PropertiesService.getScriptProperties().getProperty(OLLAMA_KEY_PROPERTY_);
+  var raw = rawApiKey_();
+  var apiKey = cleanApiKey_(raw);
   if (!apiKey && isOllamaCloud_(ai.baseUrl)) {
     console.log('No OLLAMA_API_KEY yet. Add it in Project Settings → Script properties (see the README).');
     return;
   }
-  var tags = ollamaFetch_(ai, apiKey, '/api/tags');
-  var names = ((tags && tags.models) || []).map(function (m) {
-    return m.name || m.model;
-  });
-  console.log('Models you can use (' + names.length + '): ' + names.join(', '));
-  if (names.length && names.indexOf(ai.model) === -1) {
-    console.warn('Your ai.model "' + ai.model + '" is not in that list. Pick one of them for ai.model in Settings.gs.');
+  if (apiKey) {
+    // Enough to recognize which key is set, without printing it.
+    console.log(
+      'Found OLLAMA_API_KEY: starts with "' + apiKey.slice(0, 4) + '", ' + apiKey.length + ' characters' +
+        (String(raw) !== apiKey ? ' (ignoring spaces, quotes or "Bearer" around it)' : '') + '.'
+    );
+    if (isKeyIdOnly_(apiKey)) console.warn(KEY_ID_ONLY_HINT_);
   }
-  var sample = askOllamaForAdvice_(
-    [{ input: { kind: 'Test', class: 'Biology', title: 'Unit 3 Test', due: '2026-10-01', details: 'Cell membranes, transport, osmosis.' } }],
-    ai,
-    apiKey
-  );
-  console.log('Sample answer from ' + ai.model + ': ' + JSON.stringify(sample.a1 || sample));
+  var failure = null;
+  try {
+    var sample = askOllamaForAdvice_(
+      [{ input: { kind: 'Test', class: 'Biology', title: 'Unit 3 Test', due: '2026-10-01', details: 'Cell membranes, transport, osmosis.' } }],
+      ai,
+      apiKey
+    );
+    console.log('Sample answer from ' + ai.model + ': ' + JSON.stringify(sample.a1 || sample));
+  } catch (e) {
+    failure = e;
+    console.error('Asking ' + ai.model + ' failed: ' + e.message);
+  }
+  try {
+    var tags = ollamaFetch_(ai, apiKey, '/api/tags');
+    var names = ((tags && tags.models) || []).map(function (m) {
+      return m.name || m.model;
+    });
+    console.log('Models you can use (' + names.length + '): ' + names.join(', '));
+    if (names.length && names.indexOf(ai.model) === -1) {
+      console.warn('Your ai.model "' + ai.model + '" is not in that list. Pick one of them for ai.model in Settings.gs.');
+    }
+  } catch (e) {
+    console.error("Couldn't list the models: " + e.message);
+  }
+  if (failure) throw new Error('The AI is not working yet: ' + failure.message);
   console.log('The AI is working.');
 }
 
@@ -2692,6 +2712,46 @@ function parseStudyReply_(content) {
   return out;
 }
 
+/** The key without what often sneaks in when pasting: spaces, line breaks, quotes, "Bearer ". */
+function cleanApiKey_(raw) {
+  return String(raw || '')
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .trim()
+    .replace(/^bearer\s+/i, '')
+    .replace(/\s+/g, '');
+}
+
+/** The OLLAMA_API_KEY script property as typed (also found under a slightly different name). */
+function rawApiKey_() {
+  var props = PropertiesService.getScriptProperties();
+  var value = props.getProperty(OLLAMA_KEY_PROPERTY_);
+  if (value !== null) return value;
+  var all = props.getProperties();
+  var names = Object.keys(all).filter(function (name) {
+    return name.trim().toUpperCase().replace(/[\s-]+/g, '_') === OLLAMA_KEY_PROPERTY_;
+  });
+  return names.length ? all[names[0]] : null;
+}
+
+function readApiKey_() {
+  return cleanApiKey_(rawApiKey_());
+}
+
+/**
+ * A full Ollama key looks like "<id>.<secret>". The API keys page on
+ * ollama.com only lists the <id> part, so a key without a dot was most
+ * likely copied from there.
+ */
+function isKeyIdOnly_(apiKey) {
+  return Boolean(apiKey) && apiKey.indexOf('.') === -1;
+}
+
+var KEY_ID_ONLY_HINT_ =
+  'OLLAMA_API_KEY has no "." in it, so it is probably only the first part of the key (the part ' +
+  "ollama.com lists on its API keys page). The whole key is only shown once, when it's created: " +
+  'create a new key, copy all of it, and paste it as the value of OLLAMA_API_KEY.';
+
 function isOllamaCloud_(baseUrl) {
   return /^https:\/\/(www\.)?ollama\.com\/?$/i.test(String(baseUrl).trim());
 }
@@ -2724,18 +2784,48 @@ function ollamaFetch_(ai, apiKey, path, payload) {
       throw new Error("Ollama's answer wasn't readable");
     }
   }
+  // Ollama answers errors as {"error": "..."}; a web page instead means
+  // something in front of ollama.com (like bot protection) answered.
+  var webPage = /^\s*</.test(text);
   var detail = '';
-  try {
-    detail = JSON.parse(text).error || '';
-  } catch (e) {
-    detail = text;
+  if (webPage) {
+    var title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text);
+    detail = title ? 'a web page titled "' + decodeEntities_(title[1]).trim() + '"' : 'a web page';
+  } else {
+    try {
+      detail = JSON.parse(text).error || '';
+    } catch (e) {
+      detail = text;
+    }
   }
   detail = truncate_(String(detail).replace(/\s+/g, ' ').trim(), 200);
-  if (code === 401 || code === 403) {
-    throw new Error('Ollama rejected the API key (HTTP ' + code + '). Check OLLAMA_API_KEY in Project Settings → Script properties.');
+  if (webPage && (code === 401 || code === 403 || code === 503)) {
+    throw new Error(
+      'ollama.com refused the request from Google\'s servers (HTTP ' + code + ', ' + detail + ' instead of an ' +
+        "API answer). That's a block on Google Apps Script, not a problem with your key."
+    );
+  }
+  if (code === 401) {
+    throw new Error(
+      'Ollama rejected the API key (HTTP 401' + (detail ? ': ' + detail : '') + '). ' +
+        (isKeyIdOnly_(apiKey)
+          ? KEY_ID_ONLY_HINT_
+          : "Check that OLLAMA_API_KEY holds the whole key exactly as ollama.com showed it when it was created, and that the key wasn't deleted.")
+    );
+  }
+  if (code === 403) {
+    throw new Error(
+      'Ollama refused the request (HTTP 403' + (detail ? ': ' + detail : '') + '). ' +
+        (isKeyIdOnly_(apiKey)
+          ? KEY_ID_ONLY_HINT_
+          : 'If it mentions a plan or subscription, choose another model: run checkAi() to see yours.')
+    );
   }
   if (code === 404 && path === '/api/chat') {
-    throw new Error('Ollama doesn\'t have the model "' + ai.model + '". Run checkAi() to see the models you can use, then set ai.model in Settings.gs.');
+    throw new Error(
+      'Ollama doesn\'t have the model "' + ai.model + '"' + (detail ? ' (' + detail + ')' : '') +
+        '. Run checkAi() to see the models you can use, then set ai.model in Settings.gs.'
+    );
   }
   if (code === 429) {
     throw new Error("Ollama's usage limit was reached (HTTP 429). Study sessions get plain titles until it resets.");
@@ -2792,7 +2882,7 @@ function getStudyAdvice_(assessments, settings, kindLabels) {
 
   var result = { advice: advice, asked: 0, waiting: todo.length, note: '' };
   if (!ai.enabled || !todo.length) return result;
-  var apiKey = props.getProperty(OLLAMA_KEY_PROPERTY_);
+  var apiKey = readApiKey_();
   if (!apiKey && isOllamaCloud_(ai.baseUrl)) {
     result.note = 'AI is off until you add OLLAMA_API_KEY in Project Settings → Script properties.';
     return result;

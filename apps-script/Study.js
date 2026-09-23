@@ -397,25 +397,45 @@ function makeGradesBookmarklet() {
 function checkAi() {
   var settings = loadSettings_();
   var ai = settings.ai;
-  var apiKey = PropertiesService.getScriptProperties().getProperty(OLLAMA_KEY_PROPERTY_);
+  var raw = rawApiKey_();
+  var apiKey = cleanApiKey_(raw);
   if (!apiKey && isOllamaCloud_(ai.baseUrl)) {
     console.log('No OLLAMA_API_KEY yet. Add it in Project Settings → Script properties (see the README).');
     return;
   }
-  var tags = ollamaFetch_(ai, apiKey, '/api/tags');
-  var names = ((tags && tags.models) || []).map(function (m) {
-    return m.name || m.model;
-  });
-  console.log('Models you can use (' + names.length + '): ' + names.join(', '));
-  if (names.length && names.indexOf(ai.model) === -1) {
-    console.warn('Your ai.model "' + ai.model + '" is not in that list. Pick one of them for ai.model in Settings.gs.');
+  if (apiKey) {
+    // Enough to recognize which key is set, without printing it.
+    console.log(
+      'Found OLLAMA_API_KEY: starts with "' + apiKey.slice(0, 4) + '", ' + apiKey.length + ' characters' +
+        (String(raw) !== apiKey ? ' (ignoring spaces, quotes or "Bearer" around it)' : '') + '.'
+    );
+    if (isKeyIdOnly_(apiKey)) console.warn(KEY_ID_ONLY_HINT_);
   }
-  var sample = askOllamaForAdvice_(
-    [{ input: { kind: 'Test', class: 'Biology', title: 'Unit 3 Test', due: '2026-10-01', details: 'Cell membranes, transport, osmosis.' } }],
-    ai,
-    apiKey
-  );
-  console.log('Sample answer from ' + ai.model + ': ' + JSON.stringify(sample.a1 || sample));
+  var failure = null;
+  try {
+    var sample = askOllamaForAdvice_(
+      [{ input: { kind: 'Test', class: 'Biology', title: 'Unit 3 Test', due: '2026-10-01', details: 'Cell membranes, transport, osmosis.' } }],
+      ai,
+      apiKey
+    );
+    console.log('Sample answer from ' + ai.model + ': ' + JSON.stringify(sample.a1 || sample));
+  } catch (e) {
+    failure = e;
+    console.error('Asking ' + ai.model + ' failed: ' + e.message);
+  }
+  try {
+    var tags = ollamaFetch_(ai, apiKey, '/api/tags');
+    var names = ((tags && tags.models) || []).map(function (m) {
+      return m.name || m.model;
+    });
+    console.log('Models you can use (' + names.length + '): ' + names.join(', '));
+    if (names.length && names.indexOf(ai.model) === -1) {
+      console.warn('Your ai.model "' + ai.model + '" is not in that list. Pick one of them for ai.model in Settings.gs.');
+    }
+  } catch (e) {
+    console.error("Couldn't list the models: " + e.message);
+  }
+  if (failure) throw new Error('The AI is not working yet: ' + failure.message);
   console.log('The AI is working.');
 }
 

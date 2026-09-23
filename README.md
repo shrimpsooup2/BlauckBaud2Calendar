@@ -110,7 +110,9 @@ every automatic sync.
 ### Add your Ollama API key
 
 1. Create a key at [ollama.com/settings/keys](https://ollama.com/settings/keys). The free plan
-   works; it has usage limits.
+   works; it has usage limits. **Copy the key right away:** the whole key (letters and numbers, a
+   dot, then more characters) is only shown once. Afterwards the page lists just the part before
+   the dot, and that part alone won't work.
 2. In Apps Script, click the gear (**Project Settings**), scroll to **Script properties** and click
    **Add script property**. Enter `OLLAMA_API_KEY` as the property and your key as the value, then
    click **Save script properties**.
@@ -271,10 +273,17 @@ authorizing fails, use a personal Google account instead.
 **The log says "couldn't fit N session(s)".** There isn't enough free study time before that due
 date. Add study hours, raise `study.maxMinutesPerDay`, or lower that kind's `minutes`.
 
-**AI messages in the log.** "Rejected the API key": check that the script property is named exactly
-`OLLAMA_API_KEY`. "Doesn't have the model": run `checkAi` and choose a model from its list. "Usage
-limit was reached": the free plan's limit. In every case the planner carries on without the AI and
-catches up on a later sync.
+**AI messages in the log.** Run `checkAi` first: it shows the start and length of the key it found
+(never the whole key) and Ollama's own reason for any error.
+- "Rejected the API key" or "has no "." in it": the property's value must be the whole key, which
+  has a dot in the middle. The API keys page only lists the part before the dot. If you don't have
+  the whole key any more, create a new one and copy it as soon as it appears.
+- "Refused the request from Google's servers": ollama.com blocked Google Apps Script itself, so a
+  different key won't help.
+- "Doesn't have the model": choose a model from the list `checkAi` prints.
+- "Usage limit was reached": the free plan's limit.
+
+In every case the planner carries on without the AI and catches up on a later sync.
 
 **Updating to a new version:** replace everything in `Code.gs` with the new
 [`dist/BlackbaudToCalendar.gs`](dist/BlackbaudToCalendar.gs). Keep your `Settings.gs`. If you use the

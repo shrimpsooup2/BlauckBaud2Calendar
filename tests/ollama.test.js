@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { loadScripts, plain } = require('./helpers');
 const { createGasEnvironment } = require('./gas-fakes');
 
-const KEY = 'test-key-123';
+const KEY = 'abcd1234.s3cret-part';
 const LABELS = { test: 'Test', project: 'Project' };
 
 function setUp(settings = {}) {
@@ -84,8 +84,10 @@ test('ollamaFetch_ explains errors without revealing the key', () => {
   const { gas, env, settings } = setUp();
   const ai = settings().ai;
   const cases = [
-    [{ code: 401, body: '{"error":"unauthorized"}' }, /rejected the API key \(HTTP 401\)/],
-    [{ code: 404, body: '{"error":"model not found"}' }, /doesn't have the model "gpt-oss:20b"\. Run checkAi\(\)/],
+    [{ code: 401, body: '{"error":"unauthorized"}' }, /rejected the API key \(HTTP 401: unauthorized\)\. Check that OLLAMA_API_KEY holds the whole key/],
+    [{ code: 403, body: '{"error":"this model requires a subscription"}' }, /refused the request \(HTTP 403: this model requires a subscription\)\. If it mentions a plan/],
+    [{ code: 403, body: '<!DOCTYPE html><html><head><title>Just a moment...</title></head></html>' }, /ollama\.com refused the request from Google's servers \(HTTP 403, a web page titled "Just a moment\.\.\." instead of an API answer\)\. That's a block on Google Apps Script, not a problem with your key\./],
+    [{ code: 404, body: '{"error":"model not found"}' }, /doesn't have the model "gpt-oss:20b" \(model not found\)\. Run checkAi\(\)/],
     [{ code: 429, body: '{"error":"too many requests"}' }, /usage limit was reached/],
     [{ code: 502, body: '{"error":"upstream timeout"}' }, /Ollama answered HTTP 502: upstream timeout\./],
     [{ code: 200, body: 'not json' }, /answer wasn't readable/],
@@ -98,6 +100,26 @@ test('ollamaFetch_ explains errors without revealing the key', () => {
     throw new Error(`Timeout calling https://ollama.com with Bearer ${KEY}`);
   };
   assert.throws(() => gas.ollamaFetch_(ai, KEY, '/api/chat', {}), (e) => /couldn't reach Ollama/.test(e.message) && !e.message.includes(KEY));
+});
+
+test('a key without a dot is flagged as only the ID part from the keys page', () => {
+  const { gas, env, settings } = setUp();
+  env.handleRequest = () => ({ code: 401, body: '{"error":"unauthorized"}' });
+  assert.throws(
+    () => gas.ollamaFetch_(settings().ai, '9f2c41d07be35a86c1e04d2b7a6f1c3e', '/api/chat', {}),
+    /HTTP 401: unauthorized\)\. OLLAMA_API_KEY has no "\." in it, so it is probably only the first part of the key/
+  );
+});
+
+test('pasted keys are cleaned up, and a slightly misnamed property still works', () => {
+  const { gas, env } = setUp();
+  env.properties.OLLAMA_API_KEY = '  "Bearer abcd1234.s3cret-part"\n';
+  assert.equal(gas.readApiKey_(), KEY);
+  delete env.properties.OLLAMA_API_KEY;
+  env.properties['ollama api key '] = KEY;
+  assert.equal(gas.readApiKey_(), KEY);
+  delete env.properties['ollama api key '];
+  assert.equal(gas.readApiKey_(), '');
 });
 
 test('getStudyAdvice_ asks once per assessment and remembers the answers', () => {
@@ -168,16 +190,30 @@ test('checkAi() lists models and shows a sample answer', () => {
   gas.checkAi();
   assert.match(env.logs.join('\n'), /No OLLAMA_API_KEY yet/);
 
-  env.properties.OLLAMA_API_KEY = KEY;
+  env.properties.OLLAMA_API_KEY = ` ${KEY} `;
   env.handleRequest = (url) =>
     url.endsWith('/api/tags')
       ? { code: 200, body: JSON.stringify({ models: [{ name: 'gpt-oss:120b' }, { name: 'qwen3:8b' }] }) }
       : chatReply('{"assessments":[{"id":"a1","effort":"normal","steps":["Membranes"]}]}');
   gas.checkAi();
   const log = env.logs.join('\n');
+  assert.match(log, /Found OLLAMA_API_KEY: starts with "abcd", 20 characters \(ignoring spaces, quotes or "Bearer" around it\)\./);
+  assert.match(log, /Sample answer from gpt-oss:20b: \{"effort":"normal","steps":\["Membranes"\]\}/);
   assert.match(log, /Models you can use \(2\): gpt-oss:120b, qwen3:8b/);
   assert.match(log, /Your ai.model "gpt-oss:20b" is not in that list/);
-  assert.match(log, /Sample answer from gpt-oss:20b: \{"effort":"normal","steps":\["Membranes"\]\}/);
-  assert.equal(env.requests[0].options.method, 'get');
+  assert.match(log, /The AI is working\./);
+  assert.deepEqual(env.requests.map((r) => r.options.method), ['post', 'get']);
+  assert.equal(env.requests[0].options.headers.Authorization, `Bearer ${KEY}`);
   assert.ok(!log.includes(KEY));
+});
+
+test('checkAi() says why the AI is not working', () => {
+  const { gas, env } = setUp();
+  env.properties.OLLAMA_API_KEY = '9f2c41d07be35a86c1e04d2b7a6f1c3e';
+  env.handleRequest = () => ({ code: 401, body: '{"error":"unauthorized"}' });
+  assert.throws(() => gas.checkAi(), /The AI is not working yet: Ollama rejected the API key \(HTTP 401: unauthorized\)/);
+  const log = env.logs.join('\n');
+  assert.match(log, /starts with "9f2c", 32 characters\./);
+  assert.match(log, /OLLAMA_API_KEY has no "\." in it/);
+  assert.match(log, /Couldn't list the models: Ollama rejected the API key/);
 });
