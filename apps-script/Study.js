@@ -278,7 +278,11 @@ function logStudyPlan_(plan, aiResult, settings, tz, verbose) {
     }
   });
   if (settings.ai.enabled) {
-    if (aiResult.asked) lines.push('AI (' + settings.ai.model + ') planned ' + aiResult.asked + ' assessment(s).');
+    if (aiResult.asked) {
+      lines.push(
+        'AI (' + settings.ai.model + ') planned ' + aiResult.asked + ' assessment(s). Run showAiTranscript() to read the conversation.'
+      );
+    }
     if (aiResult.waiting && !aiResult.note) lines.push('AI will look at ' + aiResult.waiting + ' more on the next sync.');
     if (aiResult.note) lines.push(aiResult.note);
   }
@@ -441,6 +445,38 @@ function checkAi() {
   }
   if (failure) throw new Error('The AI is not working yet: ' + failure.message);
   console.log('The AI is working.');
+}
+
+/** Prints the last few conversations with the AI: what the script asked and what the AI answered. */
+function showAiTranscript() {
+  var settings = loadSettings_();
+  var tz = timeZoneOf_(settings);
+  var transcripts = loadTranscripts_();
+  if (!transcripts.length) {
+    console.log(
+      'No conversations with the AI yet. One is saved each time the study planner (or checkAi) asks the AI, ' +
+        'so run syncNow() or checkAi() first.'
+    );
+    return;
+  }
+  transcripts.forEach(function (t, i) {
+    var when = wallClockInZone_(new Date(t.at), tz);
+    var lines = [
+      '===== Conversation ' + (i + 1) + ' of ' + transcripts.length + (i === 0 ? ' (newest)' : '') + ' =====',
+      'When: ' + formatHumanDate_(when.date) + ' at ' + formatHumanTime_(when.time) + '    Model: ' + t.model,
+      '',
+      '--- Instructions the AI always gets ---',
+      t.system,
+      '',
+      '--- What the script asked ---',
+      t.request,
+      '',
+    ];
+    if (t.thinking) lines.push("--- The AI's thinking ---", t.thinking, '');
+    if (t.reply) lines.push("--- The AI's answer ---", t.reply, '');
+    if (t.error) lines.push('--- It went wrong ---', t.error, '');
+    console.log(lines.join('\n'));
+  });
 }
 
 /** Deletes upcoming study sessions and plans them again from scratch. */

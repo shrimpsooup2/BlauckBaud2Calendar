@@ -119,6 +119,9 @@ every automatic sync.
 3. Run `checkAi`. It lists the models your account can use and asks for a sample plan. If your
    `ai.model` isn't in that list, pick one from it and set `ai.model` in `Settings.gs`.
 
+To see exactly what was sent to the AI and what it answered, run `showAiTranscript`. It prints the
+last 5 conversations, which are saved in the script's properties.
+
 The key never goes in `Settings.gs`, so it can't end up anywhere you share by accident. Without a key
 the planner still works; sessions just get plain titles, like "📚 Study for Unit 3 Test". The AI is
 asked about each assessment once and the answer is remembered. It only asks again if the assignment
@@ -251,6 +254,7 @@ Pick one in the Apps Script toolbar and click **Run**:
 | `makeGradesBookmarklet` | Prints your "Send grades" bookmark. |
 | `showGrades` | Shows the grades the study planner is using. |
 | `checkAi` | Checks your Ollama key and model, and shows a sample answer. |
+| `showAiTranscript` | Prints the last 5 conversations with the AI: what the script asked, the AI's thinking (if the model shares it) and its answer. |
 | `replanStudySessions` | Deletes upcoming study sessions (including ones you moved) and plans them again. |
 | `removeStudySessions` | Deletes every study session this tool made. |
 

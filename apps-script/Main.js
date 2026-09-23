@@ -15,6 +15,7 @@
  *   makeGradesBookmarklet() Prints the "Send grades" bookmark for your browser.
  *   showGrades()            Shows the grades the planner is using.
  *   checkAi()               Checks your Ollama key and model.
+ *   showAiTranscript()      Prints the last conversations with the AI.
  *   replanStudySessions()   Throws away upcoming study sessions and plans them again.
  *   removeStudySessions()   Deletes every study session this tool made.
  */

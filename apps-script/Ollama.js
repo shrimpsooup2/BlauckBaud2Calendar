@@ -14,6 +14,10 @@
 
 var OLLAMA_KEY_PROPERTY_ = 'OLLAMA_API_KEY';
 var AI_CACHE_PREFIX_ = 'B2C_AI_';
+// The last few conversations with the AI, newest in ..._0 (for showAiTranscript).
+// Deliberately not under AI_CACHE_PREFIX_, whose old entries get cleaned up.
+var TRANSCRIPT_PREFIX_ = 'B2C_TRANSCRIPT_';
+var TRANSCRIPTS_KEPT_ = 5;
 var AI_EFFORTS_ = ['light', 'normal', 'heavy'];
 
 var STUDY_ADVICE_SCHEMA_ = {
@@ -229,19 +233,85 @@ function ollamaFetch_(ai, apiKey, path, payload) {
   throw new Error('Ollama answered HTTP ' + code + (detail ? ': ' + detail : '') + '.');
 }
 
-/** Asks the AI about a batch: [{input}] -> {index: {effort, steps}} keyed like 'a1', 'a2', ... */
+/**
+ * Asks the AI about a batch: [{input}] -> {index: {effort, steps}} keyed
+ * like 'a1', 'a2', ... Every exchange is saved for showAiTranscript().
+ */
 function askOllamaForAdvice_(batch, ai, apiKey) {
   var items = batch.map(function (t, i) {
     return Object.assign({ id: 'a' + (i + 1) }, t.input);
   });
-  var body = ollamaFetch_(ai, apiKey, '/api/chat', {
-    model: ai.model,
-    messages: buildStudyPrompt_(items),
-    stream: false,
-    format: STUDY_ADVICE_SCHEMA_,
-    options: { temperature: 0.2 },
-  });
-  return parseStudyReply_(body && body.message && body.message.content);
+  var messages = buildStudyPrompt_(items);
+  var transcript = { at: new Date().toISOString(), model: ai.model, messages: messages, thinking: '', reply: '', error: '' };
+  try {
+    var body = ollamaFetch_(ai, apiKey, '/api/chat', {
+      model: ai.model,
+      messages: messages,
+      stream: false,
+      format: STUDY_ADVICE_SCHEMA_,
+      options: { temperature: 0.2 },
+    });
+    var message = (body && body.message) || {};
+    transcript.reply = String(message.content || '');
+    transcript.thinking = String(message.thinking || '');
+    return parseStudyReply_(message.content);
+  } catch (e) {
+    transcript.error = e.message;
+    throw e;
+  } finally {
+    try {
+      saveTranscript_(transcript);
+    } catch (ignored) {
+      // Never let the transcript get in the way of the plan.
+    }
+  }
+}
+
+/** Squeezes a transcript into one script property (9 KB max). */
+function fitTranscript_(t) {
+  var messages = t.messages || [];
+  var system = messages[0] ? messages[0].content : '';
+  var request = messages[1] ? messages[1].content : '';
+  var entry = {
+    at: t.at,
+    model: t.model,
+    system: truncate_(system, 600),
+    request: truncate_(request, 3500),
+    thinking: truncate_(t.thinking || '', 1500),
+    reply: truncate_(t.reply || '', 2500),
+    error: truncate_(t.error || '', 400),
+  };
+  while (JSON.stringify(entry).length > MAX_STATE_CHARS_ && entry.request.length > 200) {
+    entry.request = truncate_(entry.request, Math.floor(entry.request.length * 0.8));
+  }
+  return entry;
+}
+
+function saveTranscript_(t) {
+  var props = PropertiesService.getScriptProperties();
+  var values = {};
+  for (var i = TRANSCRIPTS_KEPT_ - 1; i > 0; i--) {
+    var older = props.getProperty(TRANSCRIPT_PREFIX_ + (i - 1));
+    if (older) values[TRANSCRIPT_PREFIX_ + i] = older;
+  }
+  values[TRANSCRIPT_PREFIX_ + 0] = JSON.stringify(fitTranscript_(t));
+  props.setProperties(values);
+}
+
+/** Saved conversations, newest first. */
+function loadTranscripts_() {
+  var props = PropertiesService.getScriptProperties();
+  var list = [];
+  for (var i = 0; i < TRANSCRIPTS_KEPT_; i++) {
+    var raw = props.getProperty(TRANSCRIPT_PREFIX_ + i);
+    if (!raw) continue;
+    try {
+      list.push(JSON.parse(raw));
+    } catch (e) {
+      // Skip a damaged entry.
+    }
+  }
+  return list;
 }
 
 /**

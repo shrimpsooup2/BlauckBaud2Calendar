@@ -217,3 +217,56 @@ test('checkAi() says why the AI is not working', () => {
   assert.match(log, /OLLAMA_API_KEY has no "\." in it/);
   assert.match(log, /Couldn't list the models: Ollama rejected the API key/);
 });
+
+test('every conversation with the AI is saved, and showAiTranscript() prints it', () => {
+  const { gas, env, settings } = setUp();
+  gas.showAiTranscript();
+  assert.match(env.logs.join('\n'), /No conversations with the AI yet/);
+
+  env.handleRequest = () => ({
+    code: 200,
+    body: JSON.stringify({
+      message: { content: '{"assessments":[{"id":"a1","effort":"heavy","steps":["Membranes"]}]}', thinking: 'Unit tests cover a lot, so heavy.' },
+    }),
+  });
+  gas.askOllamaForAdvice_([{ input: { kind: 'Test', class: 'AP Biology', title: 'Unit 3 Test', due: '2026-10-12', details: 'Cells' } }], settings().ai, KEY);
+  env.handleRequest = () => ({ code: 429, body: '{"error":"limit"}' });
+  assert.throws(() => gas.askOllamaForAdvice_([{ input: { title: 'Quiz 2.1' } }], settings().ai, KEY));
+
+  env.logs.length = 0;
+  gas.showAiTranscript();
+  const [newest, older] = env.logs;
+  assert.match(newest, /^===== Conversation 1 of 2 \(newest\) =====\nWhen: \w{3}, \w{3} \d+, \d{4} at \d+:\d{2} [AP]M {4}Model: gpt-oss:20b/);
+  assert.match(newest, /--- What the script asked ---\n[\s\S]*"title": "Quiz 2\.1"/);
+  assert.match(newest, /--- It went wrong ---\nOllama's usage limit was reached/);
+  assert.match(older, /^===== Conversation 2 of 2 =====/);
+  assert.match(older, /--- Instructions the AI always gets ---\nYou help a high school student plan study time/);
+  assert.match(older, /"class": "AP Biology"/);
+  assert.match(older, /--- The AI's thinking ---\nUnit tests cover a lot, so heavy\./);
+  assert.match(older, /--- The AI's answer ---\n\{"assessments":\[\{"id":"a1","effort":"heavy","steps":\["Membranes"\]\}\]\}/);
+  assert.ok(!env.logs.join('\n').includes(KEY));
+});
+
+test('only the last 5 conversations are kept, each small enough for a script property', () => {
+  const { gas, env, settings } = setUp();
+  env.handleRequest = () => chatReply('{"assessments":[]}');
+  for (let i = 1; i <= 7; i++) {
+    gas.askOllamaForAdvice_([{ input: { title: `Test ${i}`, details: 'x'.repeat(1200) } }, { input: { title: 'Big', details: 'y'.repeat(1200) } }, { input: { title: 'Bigger', details: 'z'.repeat(1200) } }], settings().ai, KEY);
+  }
+  const saved = Object.keys(env.properties).filter((k) => k.startsWith('B2C_TRANSCRIPT_')).sort();
+  assert.deepEqual(saved, ['B2C_TRANSCRIPT_0', 'B2C_TRANSCRIPT_1', 'B2C_TRANSCRIPT_2', 'B2C_TRANSCRIPT_3', 'B2C_TRANSCRIPT_4']);
+  assert.ok(saved.every((k) => env.properties[k].length <= 8500));
+  const titles = plain(gas.loadTranscripts_()).map((t) => /"title": "(Test \d)"/.exec(t.request)[1]);
+  assert.deepEqual(titles, ['Test 7', 'Test 6', 'Test 5', 'Test 4', 'Test 3']);
+});
+
+test('clearing old AI answers leaves the transcripts alone', () => {
+  const { gas, env, settings } = setUp();
+  env.properties.OLLAMA_API_KEY = KEY;
+  env.handleRequest = () => chatReply('{"assessments":[{"id":"a1","effort":"normal","steps":["Read"]}]}');
+  gas.getStudyAdvice_([assessment('bb:1')], settings(), LABELS);
+  gas.getStudyAdvice_([assessment('bb:2', { title: 'Other' })], settings(), LABELS);
+  assert.equal(gas.loadTranscripts_().length, 2);
+  gas.clearAiCache_();
+  assert.equal(gas.loadTranscripts_().length, 2);
+});
