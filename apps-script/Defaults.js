@@ -150,4 +150,55 @@ var DEFAULTS_ = {
 
   // How many skipped feed items preview() lists (they are always counted).
   previewSkippedLimit: 40,
+
+  // Study planner: puts study sessions for upcoming assessments on a separate
+  // calendar. More time goes to classes where your grade is lower.
+  study: {
+    enabled: false,
+    calendarName: 'Study Plan',
+    icon: '📚',
+    color: 'sage',
+    // Popup reminder before each session (0 = none).
+    reminderMinutes: 10,
+    sessionMinutes: 45,
+    maxMinutesPerDay: 120,
+    // Free time kept between a session and anything else.
+    breakMinutes: 15,
+    maxSessionsPerAssessment: 10,
+    // When you can study, 24-hour clock. Several ranges: '07:00-07:45, 16:00-21:00'.
+    // mon, tue, wed, thu, fri, sat, sun override weekdays/weekends; '' = no study that day.
+    hours: { weekdays: '16:00-21:00', weekends: '10:00-18:00' },
+    // Other calendars to plan around (by name). Your main calendar always counts.
+    busyCalendars: [],
+    // At this grade an assessment gets its kind's usual time; each 5 points
+    // below adds 25% (up to 2×), each 5 points above takes 25% off (down to 0.6×).
+    targetGrade: 93,
+    // Typed-in grades, e.g. { 'AP Biology': 84 }. They win over the bookmark's.
+    grades: {},
+    // Web app URL for the grades bookmark (see README). Usually found automatically.
+    webAppUrl: '',
+    // Usual study time per kind at your target grade; sessions start at most
+    // daysAhead days before the due date. spacing: 'spaced' bunches sessions
+    // near the due date (tests); 'even' spreads them out (projects).
+    kinds: {
+      test: { minutes: 180, daysAhead: 10, spacing: 'spaced' },
+      quiz: { minutes: 45, daysAhead: 3, spacing: 'spaced' },
+      project: { minutes: 300, daysAhead: 21, spacing: 'even' },
+      essay: { minutes: 240, daysAhead: 14, spacing: 'even' },
+      presentation: { minutes: 120, daysAhead: 7, spacing: 'even' },
+      lab: { minutes: 90, daysAhead: 5, spacing: 'even' },
+    },
+    // For kinds you add yourself.
+    defaultKind: { minutes: 90, daysAhead: 7, spacing: 'even' },
+  },
+
+  // AI study advice (what to study in each session, and how big each
+  // assessment is). Uses the script property OLLAMA_API_KEY.
+  ai: {
+    enabled: true,
+    baseUrl: 'https://ollama.com',
+    model: 'gpt-oss:20b',
+    // Assessments to ask about per sync (answers are remembered).
+    maxPerRun: 5,
+  },
 };

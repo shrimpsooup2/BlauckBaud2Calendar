@@ -13,26 +13,37 @@ var PROP_CALENDAR_ID_ = 'B2C_CALENDAR_ID';
 var PROP_SYNCED_ = 'B2C_SYNCED';
 var MAX_STATE_CHARS_ = 8500;
 
-/** The tool's calendar (by name, preferring the one used last time), or null. */
-function findCalendar_(settings) {
-  var calendars = CalendarApp.getOwnedCalendarsByName(settings.calendarName);
+/** Your calendar called `name` (preferring the one whose id is saved in `idProperty`), or null. */
+function findOwnedCalendar_(name, idProperty) {
+  var calendars = CalendarApp.getOwnedCalendarsByName(name);
   if (!calendars.length) return null;
-  var savedId = PropertiesService.getScriptProperties().getProperty(PROP_CALENDAR_ID_);
+  var savedId = PropertiesService.getScriptProperties().getProperty(idProperty);
   for (var i = 0; i < calendars.length; i++) {
     if (calendars[i].getId() === savedId) return calendars[i];
   }
   return calendars[0];
 }
 
-function getOrCreateCalendar_(settings) {
-  var calendar = findCalendar_(settings);
+function getOrCreateOwnedCalendar_(name, idProperty, summary) {
+  var calendar = findOwnedCalendar_(name, idProperty);
   if (!calendar) {
-    calendar = CalendarApp.createCalendar(settings.calendarName, {
-      summary: 'Tests, quizzes and major projects synced from Blackbaud.',
-    });
-    console.log('Created the Google Calendar "' + settings.calendarName + '".');
+    calendar = CalendarApp.createCalendar(name, { summary: summary });
+    console.log('Created the Google Calendar "' + name + '".');
   }
   return calendar;
+}
+
+/** The assessments calendar, or null. */
+function findCalendar_(settings) {
+  return findOwnedCalendar_(settings.calendarName, PROP_CALENDAR_ID_);
+}
+
+function getOrCreateCalendar_(settings) {
+  return getOrCreateOwnedCalendar_(
+    settings.calendarName,
+    PROP_CALENDAR_ID_,
+    'Tests, quizzes and major projects synced from Blackbaud.'
+  );
 }
 
 /** {stateKey: date} of items synced to `calendar` before ({} if it's a new calendar). */
@@ -66,17 +77,23 @@ function clearSyncedState_() {
   PropertiesService.getScriptProperties().deleteProperty(PROP_SYNCED_);
 }
 
-/**
- * This tool's events on `calendar` from `fromDate` to `toDate` (inclusive,
- * 'YYYY-MM-DD'): [{id, hash, date, title, ref}].
- */
-function listToolEvents_(calendar, fromDate, toDate, tz) {
+/** Events on `calendar` from `fromDate` to `toDate` (inclusive, 'YYYY-MM-DD'). */
+function eventsBetween_(calendar, fromDate, toDate, tz) {
   var from = zonedWallTimeToInstant_(fromDate, '00:00', tz);
   var to = zonedWallTimeToInstant_(addDays_(toDate, 1), '00:00', tz);
+  return calendar.getEvents(from, to);
+}
+
+/**
+ * This tool's assessment events on `calendar` from `fromDate` to `toDate`
+ * (inclusive, 'YYYY-MM-DD'): [{id, hash, date, title, ref}]. Their ids start
+ * with "bb:"; study sessions ("study:...") are handled in Study.js.
+ */
+function listToolEvents_(calendar, fromDate, toDate, tz) {
   var events = [];
-  calendar.getEvents(from, to).forEach(function (ev) {
+  eventsBetween_(calendar, fromDate, toDate, tz).forEach(function (ev) {
     var id = ev.getTag(TAG_ID_);
-    if (!id) return;
+    if (!id || id.indexOf('bb:') !== 0) return;
     var start = ev.isAllDayEvent() ? ev.getAllDayStartDate() : ev.getStartTime();
     events.push({
       id: id,

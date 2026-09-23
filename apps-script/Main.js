@@ -10,6 +10,13 @@
  *   restoreDeletedEvents()  Brings back synced events you deleted from the calendar.
  *   stopAutoSync()          Turns the automatic sync off.
  *   removeSyncedEvents()    Deletes every event this tool created.
+ *
+ * Study planner (turn on with study.enabled in Settings.gs):
+ *   makeGradesBookmarklet() Prints the "Send grades" bookmark for your browser.
+ *   showGrades()            Shows the grades the planner is using.
+ *   checkAi()               Checks your Ollama key and model.
+ *   replanStudySessions()   Throws away upcoming study sessions and plans them again.
+ *   removeStudySessions()   Deletes every study session this tool made.
  */
 
 var VALID_SYNC_HOURS_ = [1, 2, 4, 6, 8, 12];
@@ -165,6 +172,7 @@ function settingsProblems_(s) {
   ['excludeKeywords', 'extraExcludeKeywords', 'excludeTypes'].forEach(function (key) {
     if (!Array.isArray(s[key])) problems.push(key + " must be a list like ['word', 'another phrase'].");
   });
+  studySettingsProblems_(s, problems);
   Object.keys(s.categories || {}).forEach(function (key) {
     var c = s.categories[key];
     var where = 'categories.' + key;
@@ -180,6 +188,82 @@ function settingsProblems_(s) {
     });
   });
   return problems;
+}
+
+function numberBetween_(value, min, max) {
+  var n = Number(value);
+  return typeof value !== 'boolean' && value !== '' && value !== null && n >= min && n <= max;
+}
+
+/** Adds problems with the study and ai settings to `problems`. */
+function studySettingsProblems_(s, problems) {
+  var study = s.study;
+  var ai = s.ai;
+  if (!isPlainObject_(study) || !isPlainObject_(ai)) {
+    problems.push('study and ai must be written like { enabled: true }.');
+    return;
+  }
+  if (!String(study.calendarName || '').trim()) problems.push('study.calendarName must not be empty.');
+  if (!isPlainObject_(study.hours)) {
+    problems.push("study.hours must look like { weekdays: '16:00-21:00', weekends: '10:00-18:00' }.");
+  } else {
+    Object.keys(study.hours).forEach(function (day) {
+      if (['weekdays', 'weekends'].concat(WEEKDAY_KEYS_).indexOf(day) === -1) {
+        problems.push('study.hours.' + day + ' is not a day I know (use weekdays, weekends, or mon to sun).');
+      } else if (parseHourRanges_(study.hours[day]) === null) {
+        problems.push("study.hours." + day + " must look like '16:00-21:00' (or '' for none).");
+      }
+    });
+  }
+  [
+    ['sessionMinutes', 15, 240],
+    ['maxMinutesPerDay', 15, 720],
+    ['breakMinutes', 0, 120],
+    ['maxSessionsPerAssessment', 1, 30],
+    ['reminderMinutes', 0, 1440],
+    ['targetGrade', 0, 150],
+  ].forEach(function (rule) {
+    if (!numberBetween_(study[rule[0]], rule[1], rule[2])) {
+      problems.push('study.' + rule[0] + ' must be a number from ' + rule[1] + ' to ' + rule[2] + '.');
+    }
+  });
+  if (numberBetween_(study.maxMinutesPerDay, 0, 720) && Number(study.maxMinutesPerDay) < Number(study.sessionMinutes)) {
+    problems.push('study.maxMinutesPerDay must be at least study.sessionMinutes.');
+  }
+  if (colorId_(study.color) === null) problems.push('study.color "' + study.color + '" is not a color I know.');
+  if (!Array.isArray(study.busyCalendars)) problems.push("study.busyCalendars must be a list like ['Soccer'].");
+  if (!isPlainObject_(study.grades)) {
+    problems.push("study.grades must look like { 'AP Biology': 84 }.");
+  } else {
+    Object.keys(study.grades).forEach(function (name) {
+      if (!numberBetween_(study.grades[name], 0, 150)) problems.push('study.grades["' + name + '"] must be a number like 84.');
+    });
+  }
+  if (study.webAppUrl && !/^https:\/\/script\.google\.com\/.+\/exec$/.test(String(study.webAppUrl).trim())) {
+    problems.push('study.webAppUrl should be the Web app URL from Deploy, ending in /exec.');
+  }
+  var kinds = isPlainObject_(study.kinds) ? study.kinds : {};
+  if (!isPlainObject_(study.kinds)) problems.push('study.kinds must look like { test: { minutes: 180 } }.');
+  var kindEntries = Object.keys(kinds).map(function (name) {
+    return ['study.kinds.' + name, kinds[name]];
+  });
+  kindEntries.push(['study.defaultKind', study.defaultKind]);
+  kindEntries.forEach(function (entry) {
+    var where = entry[0];
+    var kind = entry[1];
+    if (!isPlainObject_(kind)) {
+      problems.push(where + ' must look like { minutes: 180, daysAhead: 10 }.');
+      return;
+    }
+    if (kind.minutes !== undefined && !numberBetween_(kind.minutes, 0, 3000)) problems.push(where + '.minutes must be a number of minutes.');
+    if (kind.daysAhead !== undefined && !numberBetween_(kind.daysAhead, 0, 30)) problems.push(where + '.daysAhead must be from 0 to 30.');
+    if (kind.spacing !== undefined && kind.spacing !== 'spaced' && kind.spacing !== 'even') {
+      problems.push(where + ".spacing must be 'spaced' or 'even'.");
+    }
+  });
+  if (!/^https?:\/\/\S+$/.test(String(ai.baseUrl || ''))) problems.push('ai.baseUrl must be a web address like https://ollama.com.');
+  if (!String(ai.model || '').trim()) problems.push("ai.model must name a model, like 'gpt-oss:20b'.");
+  if (!numberBetween_(ai.maxPerRun, 1, 20)) problems.push('ai.maxPerRun must be a number from 1 to 20.');
 }
 
 function timeZoneOf_(settings) {
@@ -266,7 +350,8 @@ function runSync_(opts) {
       keptDeleted: plan.keptDeleted.length,
     };
     if (opts.dryRun) {
-      console.log('This was a preview: your calendar was not changed. Run syncNow() or setup() to apply it.');
+      if (settings.study.enabled) runStudySafely_(settings, plan, tz, { dryRun: true }, []);
+      console.log('This was a preview: your calendars were not changed. Run syncNow() or setup() to apply it.');
       return summary;
     }
 
@@ -276,9 +361,13 @@ function runSync_(opts) {
       'Done: ' + result.created + ' added, ' + result.updated + ' updated, ' + result.removed + ' removed.' +
         (result.postponed ? ' ' + result.postponed + ' change(s) left for the next sync (ran out of time).' : '')
     );
-    if (result.errors.length) {
-      console.error(result.errors.join('\n'));
-      throw new Error(result.errors.length + ' calendar change(s) failed (details above). They will be retried on the next sync.');
+    var errors = result.errors.slice();
+    if (settings.study.enabled) {
+      summary.study = runStudySafely_(settings, plan, tz, { dryRun: false, deadline: started + MAX_RUN_MILLIS_ }, errors);
+    }
+    if (errors.length) {
+      console.error(errors.join('\n'));
+      throw new Error(errors.length + ' calendar change(s) failed (details above). They will be retried on the next sync.');
     }
     summary.created = result.created;
     summary.updated = result.updated;
@@ -286,6 +375,19 @@ function runSync_(opts) {
     return summary;
   } finally {
     lock.releaseLock();
+  }
+}
+
+/** Runs the study planner; its problems are added to `errors` instead of stopping the sync. */
+function runStudySafely_(settings, syncPlan, tz, opts, errors) {
+  try {
+    var result = runStudy_(settings, syncPlan, tz, opts);
+    Array.prototype.push.apply(errors, result.errors);
+    return result;
+  } catch (e) {
+    console.error('Study plan: ' + e.message);
+    errors.push('Study plan: ' + e.message);
+    return null;
   }
 }
 

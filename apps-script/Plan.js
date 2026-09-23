@@ -144,6 +144,13 @@ function buildEvent_(item, categoryKey, settings) {
       return b - a;
     }),
     category: categoryKey,
+    // For the study planner; not written to the calendar.
+    source: {
+      title: item.title,
+      course: item.course,
+      summary: item.summary,
+      description: truncate_(item.description || '', 1500),
+    },
   };
   event.hash = hash_(
     JSON.stringify([event.title, event.description, event.date, event.time, event.durationMinutes, event.color, event.reminders])

@@ -15,6 +15,13 @@
  *   restoreDeletedEvents()  Brings back synced events you deleted from the calendar.
  *   stopAutoSync()          Turns the automatic sync off.
  *   removeSyncedEvents()    Deletes every event this tool created.
+ *
+ * Study planner (turn on with study.enabled in Settings.gs):
+ *   makeGradesBookmarklet() Prints the "Send grades" bookmark for your browser.
+ *   showGrades()            Shows the grades the planner is using.
+ *   checkAi()               Checks your Ollama key and model.
+ *   replanStudySessions()   Throws away upcoming study sessions and plans them again.
+ *   removeStudySessions()   Deletes every study session this tool made.
  */
 
 var VALID_SYNC_HOURS_ = [1, 2, 4, 6, 8, 12];
@@ -170,6 +177,7 @@ function settingsProblems_(s) {
   ['excludeKeywords', 'extraExcludeKeywords', 'excludeTypes'].forEach(function (key) {
     if (!Array.isArray(s[key])) problems.push(key + " must be a list like ['word', 'another phrase'].");
   });
+  studySettingsProblems_(s, problems);
   Object.keys(s.categories || {}).forEach(function (key) {
     var c = s.categories[key];
     var where = 'categories.' + key;
@@ -185,6 +193,82 @@ function settingsProblems_(s) {
     });
   });
   return problems;
+}
+
+function numberBetween_(value, min, max) {
+  var n = Number(value);
+  return typeof value !== 'boolean' && value !== '' && value !== null && n >= min && n <= max;
+}
+
+/** Adds problems with the study and ai settings to `problems`. */
+function studySettingsProblems_(s, problems) {
+  var study = s.study;
+  var ai = s.ai;
+  if (!isPlainObject_(study) || !isPlainObject_(ai)) {
+    problems.push('study and ai must be written like { enabled: true }.');
+    return;
+  }
+  if (!String(study.calendarName || '').trim()) problems.push('study.calendarName must not be empty.');
+  if (!isPlainObject_(study.hours)) {
+    problems.push("study.hours must look like { weekdays: '16:00-21:00', weekends: '10:00-18:00' }.");
+  } else {
+    Object.keys(study.hours).forEach(function (day) {
+      if (['weekdays', 'weekends'].concat(WEEKDAY_KEYS_).indexOf(day) === -1) {
+        problems.push('study.hours.' + day + ' is not a day I know (use weekdays, weekends, or mon to sun).');
+      } else if (parseHourRanges_(study.hours[day]) === null) {
+        problems.push("study.hours." + day + " must look like '16:00-21:00' (or '' for none).");
+      }
+    });
+  }
+  [
+    ['sessionMinutes', 15, 240],
+    ['maxMinutesPerDay', 15, 720],
+    ['breakMinutes', 0, 120],
+    ['maxSessionsPerAssessment', 1, 30],
+    ['reminderMinutes', 0, 1440],
+    ['targetGrade', 0, 150],
+  ].forEach(function (rule) {
+    if (!numberBetween_(study[rule[0]], rule[1], rule[2])) {
+      problems.push('study.' + rule[0] + ' must be a number from ' + rule[1] + ' to ' + rule[2] + '.');
+    }
+  });
+  if (numberBetween_(study.maxMinutesPerDay, 0, 720) && Number(study.maxMinutesPerDay) < Number(study.sessionMinutes)) {
+    problems.push('study.maxMinutesPerDay must be at least study.sessionMinutes.');
+  }
+  if (colorId_(study.color) === null) problems.push('study.color "' + study.color + '" is not a color I know.');
+  if (!Array.isArray(study.busyCalendars)) problems.push("study.busyCalendars must be a list like ['Soccer'].");
+  if (!isPlainObject_(study.grades)) {
+    problems.push("study.grades must look like { 'AP Biology': 84 }.");
+  } else {
+    Object.keys(study.grades).forEach(function (name) {
+      if (!numberBetween_(study.grades[name], 0, 150)) problems.push('study.grades["' + name + '"] must be a number like 84.');
+    });
+  }
+  if (study.webAppUrl && !/^https:\/\/script\.google\.com\/.+\/exec$/.test(String(study.webAppUrl).trim())) {
+    problems.push('study.webAppUrl should be the Web app URL from Deploy, ending in /exec.');
+  }
+  var kinds = isPlainObject_(study.kinds) ? study.kinds : {};
+  if (!isPlainObject_(study.kinds)) problems.push('study.kinds must look like { test: { minutes: 180 } }.');
+  var kindEntries = Object.keys(kinds).map(function (name) {
+    return ['study.kinds.' + name, kinds[name]];
+  });
+  kindEntries.push(['study.defaultKind', study.defaultKind]);
+  kindEntries.forEach(function (entry) {
+    var where = entry[0];
+    var kind = entry[1];
+    if (!isPlainObject_(kind)) {
+      problems.push(where + ' must look like { minutes: 180, daysAhead: 10 }.');
+      return;
+    }
+    if (kind.minutes !== undefined && !numberBetween_(kind.minutes, 0, 3000)) problems.push(where + '.minutes must be a number of minutes.');
+    if (kind.daysAhead !== undefined && !numberBetween_(kind.daysAhead, 0, 30)) problems.push(where + '.daysAhead must be from 0 to 30.');
+    if (kind.spacing !== undefined && kind.spacing !== 'spaced' && kind.spacing !== 'even') {
+      problems.push(where + ".spacing must be 'spaced' or 'even'.");
+    }
+  });
+  if (!/^https?:\/\/\S+$/.test(String(ai.baseUrl || ''))) problems.push('ai.baseUrl must be a web address like https://ollama.com.');
+  if (!String(ai.model || '').trim()) problems.push("ai.model must name a model, like 'gpt-oss:20b'.");
+  if (!numberBetween_(ai.maxPerRun, 1, 20)) problems.push('ai.maxPerRun must be a number from 1 to 20.');
 }
 
 function timeZoneOf_(settings) {
@@ -271,7 +355,8 @@ function runSync_(opts) {
       keptDeleted: plan.keptDeleted.length,
     };
     if (opts.dryRun) {
-      console.log('This was a preview: your calendar was not changed. Run syncNow() or setup() to apply it.');
+      if (settings.study.enabled) runStudySafely_(settings, plan, tz, { dryRun: true }, []);
+      console.log('This was a preview: your calendars were not changed. Run syncNow() or setup() to apply it.');
       return summary;
     }
 
@@ -281,9 +366,13 @@ function runSync_(opts) {
       'Done: ' + result.created + ' added, ' + result.updated + ' updated, ' + result.removed + ' removed.' +
         (result.postponed ? ' ' + result.postponed + ' change(s) left for the next sync (ran out of time).' : '')
     );
-    if (result.errors.length) {
-      console.error(result.errors.join('\n'));
-      throw new Error(result.errors.length + ' calendar change(s) failed (details above). They will be retried on the next sync.');
+    var errors = result.errors.slice();
+    if (settings.study.enabled) {
+      summary.study = runStudySafely_(settings, plan, tz, { dryRun: false, deadline: started + MAX_RUN_MILLIS_ }, errors);
+    }
+    if (errors.length) {
+      console.error(errors.join('\n'));
+      throw new Error(errors.length + ' calendar change(s) failed (details above). They will be retried on the next sync.');
     }
     summary.created = result.created;
     summary.updated = result.updated;
@@ -291,6 +380,19 @@ function runSync_(opts) {
     return summary;
   } finally {
     lock.releaseLock();
+  }
+}
+
+/** Runs the study planner; its problems are added to `errors` instead of stopping the sync. */
+function runStudySafely_(settings, syncPlan, tz, opts, errors) {
+  try {
+    var result = runStudy_(settings, syncPlan, tz, opts);
+    Array.prototype.push.apply(errors, result.errors);
+    return result;
+  } catch (e) {
+    console.error('Study plan: ' + e.message);
+    errors.push('Study plan: ' + e.message);
+    return null;
   }
 }
 
@@ -514,6 +616,57 @@ var DEFAULTS_ = {
 
   // How many skipped feed items preview() lists (they are always counted).
   previewSkippedLimit: 40,
+
+  // Study planner: puts study sessions for upcoming assessments on a separate
+  // calendar. More time goes to classes where your grade is lower.
+  study: {
+    enabled: false,
+    calendarName: 'Study Plan',
+    icon: '📚',
+    color: 'sage',
+    // Popup reminder before each session (0 = none).
+    reminderMinutes: 10,
+    sessionMinutes: 45,
+    maxMinutesPerDay: 120,
+    // Free time kept between a session and anything else.
+    breakMinutes: 15,
+    maxSessionsPerAssessment: 10,
+    // When you can study, 24-hour clock. Several ranges: '07:00-07:45, 16:00-21:00'.
+    // mon, tue, wed, thu, fri, sat, sun override weekdays/weekends; '' = no study that day.
+    hours: { weekdays: '16:00-21:00', weekends: '10:00-18:00' },
+    // Other calendars to plan around (by name). Your main calendar always counts.
+    busyCalendars: [],
+    // At this grade an assessment gets its kind's usual time; each 5 points
+    // below adds 25% (up to 2×), each 5 points above takes 25% off (down to 0.6×).
+    targetGrade: 93,
+    // Typed-in grades, e.g. { 'AP Biology': 84 }. They win over the bookmark's.
+    grades: {},
+    // Web app URL for the grades bookmark (see README). Usually found automatically.
+    webAppUrl: '',
+    // Usual study time per kind at your target grade; sessions start at most
+    // daysAhead days before the due date. spacing: 'spaced' bunches sessions
+    // near the due date (tests); 'even' spreads them out (projects).
+    kinds: {
+      test: { minutes: 180, daysAhead: 10, spacing: 'spaced' },
+      quiz: { minutes: 45, daysAhead: 3, spacing: 'spaced' },
+      project: { minutes: 300, daysAhead: 21, spacing: 'even' },
+      essay: { minutes: 240, daysAhead: 14, spacing: 'even' },
+      presentation: { minutes: 120, daysAhead: 7, spacing: 'even' },
+      lab: { minutes: 90, daysAhead: 5, spacing: 'even' },
+    },
+    // For kinds you add yourself.
+    defaultKind: { minutes: 90, daysAhead: 7, spacing: 'even' },
+  },
+
+  // AI study advice (what to study in each session, and how big each
+  // assessment is). Uses the script property OLLAMA_API_KEY.
+  ai: {
+    enabled: true,
+    baseUrl: 'https://ollama.com',
+    model: 'gpt-oss:20b',
+    // Assessments to ask about per sync (answers are remembered).
+    maxPerRun: 5,
+  },
 };
 
 // ===== Calendar.js =====
@@ -533,26 +686,37 @@ var PROP_CALENDAR_ID_ = 'B2C_CALENDAR_ID';
 var PROP_SYNCED_ = 'B2C_SYNCED';
 var MAX_STATE_CHARS_ = 8500;
 
-/** The tool's calendar (by name, preferring the one used last time), or null. */
-function findCalendar_(settings) {
-  var calendars = CalendarApp.getOwnedCalendarsByName(settings.calendarName);
+/** Your calendar called `name` (preferring the one whose id is saved in `idProperty`), or null. */
+function findOwnedCalendar_(name, idProperty) {
+  var calendars = CalendarApp.getOwnedCalendarsByName(name);
   if (!calendars.length) return null;
-  var savedId = PropertiesService.getScriptProperties().getProperty(PROP_CALENDAR_ID_);
+  var savedId = PropertiesService.getScriptProperties().getProperty(idProperty);
   for (var i = 0; i < calendars.length; i++) {
     if (calendars[i].getId() === savedId) return calendars[i];
   }
   return calendars[0];
 }
 
-function getOrCreateCalendar_(settings) {
-  var calendar = findCalendar_(settings);
+function getOrCreateOwnedCalendar_(name, idProperty, summary) {
+  var calendar = findOwnedCalendar_(name, idProperty);
   if (!calendar) {
-    calendar = CalendarApp.createCalendar(settings.calendarName, {
-      summary: 'Tests, quizzes and major projects synced from Blackbaud.',
-    });
-    console.log('Created the Google Calendar "' + settings.calendarName + '".');
+    calendar = CalendarApp.createCalendar(name, { summary: summary });
+    console.log('Created the Google Calendar "' + name + '".');
   }
   return calendar;
+}
+
+/** The assessments calendar, or null. */
+function findCalendar_(settings) {
+  return findOwnedCalendar_(settings.calendarName, PROP_CALENDAR_ID_);
+}
+
+function getOrCreateCalendar_(settings) {
+  return getOrCreateOwnedCalendar_(
+    settings.calendarName,
+    PROP_CALENDAR_ID_,
+    'Tests, quizzes and major projects synced from Blackbaud.'
+  );
 }
 
 /** {stateKey: date} of items synced to `calendar` before ({} if it's a new calendar). */
@@ -586,17 +750,23 @@ function clearSyncedState_() {
   PropertiesService.getScriptProperties().deleteProperty(PROP_SYNCED_);
 }
 
-/**
- * This tool's events on `calendar` from `fromDate` to `toDate` (inclusive,
- * 'YYYY-MM-DD'): [{id, hash, date, title, ref}].
- */
-function listToolEvents_(calendar, fromDate, toDate, tz) {
+/** Events on `calendar` from `fromDate` to `toDate` (inclusive, 'YYYY-MM-DD'). */
+function eventsBetween_(calendar, fromDate, toDate, tz) {
   var from = zonedWallTimeToInstant_(fromDate, '00:00', tz);
   var to = zonedWallTimeToInstant_(addDays_(toDate, 1), '00:00', tz);
+  return calendar.getEvents(from, to);
+}
+
+/**
+ * This tool's assessment events on `calendar` from `fromDate` to `toDate`
+ * (inclusive, 'YYYY-MM-DD'): [{id, hash, date, title, ref}]. Their ids start
+ * with "bb:"; study sessions ("study:...") are handled in Study.js.
+ */
+function listToolEvents_(calendar, fromDate, toDate, tz) {
   var events = [];
-  calendar.getEvents(from, to).forEach(function (ev) {
+  eventsBetween_(calendar, fromDate, toDate, tz).forEach(function (ev) {
     var id = ev.getTag(TAG_ID_);
-    if (!id) return;
+    if (!id || id.indexOf('bb:') !== 0) return;
     var start = ev.isAllDayEvent() ? ev.getAllDayStartDate() : ev.getStartTime();
     events.push({
       id: id,
@@ -880,6 +1050,13 @@ function buildEvent_(item, categoryKey, settings) {
       return b - a;
     }),
     category: categoryKey,
+    // For the study planner; not written to the calendar.
+    source: {
+      title: item.title,
+      course: item.course,
+      summary: item.summary,
+      description: truncate_(item.description || '', 1500),
+    },
   };
   event.hash = hash_(
     JSON.stringify([event.title, event.description, event.date, event.time, event.durationMinutes, event.color, event.reminders])
@@ -1278,6 +1455,1373 @@ function readFeed_(icsText, tz) {
     .filter(function (item) {
       return item.start;
     });
+}
+
+// ===== Study.js =====
+
+/**
+ * Study plan: gathers the synced assessments, your grades, AI advice and
+ * your busy times, runs the planner (Planner.js) and keeps the "Study Plan"
+ * calendar in step. Runs after every sync when study.enabled is true.
+ *
+ * Study sessions carry the tags b2c_id ("study:..."), b2c_for (the
+ * assessment), b2c_planned (the start time the planner chose, to notice when
+ * you move a session) and b2c_hash.
+ */
+
+var TAG_STUDY_FOR_ = 'b2c_for';
+var TAG_PLANNED_ = 'b2c_planned';
+var PROP_STUDY_CALENDAR_ID_ = 'B2C_STUDY_CALENDAR_ID';
+var PROP_STUDY_ = 'B2C_STUDY';
+// Sessions are read this far back; deleted ones are remembered a bit less
+// (daysAhead is capped at 30, so every current assessment's sessions fit).
+var STUDY_HISTORY_DAYS_ = 45;
+var STUDY_MEMORY_DAYS_ = 40;
+
+function findStudyCalendar_(settings) {
+  return findOwnedCalendar_(settings.study.calendarName, PROP_STUDY_CALENDAR_ID_);
+}
+
+function getOrCreateStudyCalendar_(settings) {
+  return getOrCreateOwnedCalendar_(
+    settings.study.calendarName,
+    PROP_STUDY_CALENDAR_ID_,
+    'Study sessions planned for your Blackbaud assessments.'
+  );
+}
+
+function kindLabels_(settings) {
+  var labels = {};
+  Object.keys(settings.categories).forEach(function (key) {
+    labels[key] = settings.categories[key].label || key;
+  });
+  return labels;
+}
+
+/** Planner assessments from a sync plan (leaves out ones you deleted from the calendar). */
+function studyAssessments_(syncPlan) {
+  var desired = syncPlan.create.concat(
+    syncPlan.unchanged,
+    syncPlan.update.map(function (u) {
+      return u.desired;
+    })
+  );
+  return desired.map(function (d) {
+    return {
+      id: d.id,
+      title: d.source.title,
+      course: d.source.course,
+      summary: d.source.summary,
+      details: d.source.description,
+      category: d.category,
+      date: d.date,
+    };
+  });
+}
+
+/** This tool's study sessions on `calendar` between two dates. */
+function listStudySessions_(calendar, fromDate, toDate, tz) {
+  var sessions = [];
+  eventsBetween_(calendar, fromDate, toDate, tz).forEach(function (ev) {
+    var id = ev.getTag(TAG_ID_);
+    if (!id || id.indexOf('study:') !== 0) return;
+    var start = ev.getStartTime().getTime();
+    var planned = Number(ev.getTag(TAG_PLANNED_));
+    sessions.push({
+      id: id,
+      forId: ev.getTag(TAG_STUDY_FOR_) || '',
+      start: start,
+      end: ev.getEndTime().getTime(),
+      plannedStart: planned ? planned : null,
+      hash: ev.getTag(TAG_HASH_) || '',
+      title: ev.getTitle(),
+      date: wallClockInZone_(new Date(start), tz).date,
+      ref: ev,
+    });
+  });
+  return sessions;
+}
+
+function isDeclined_(ev) {
+  try {
+    return CalendarApp.GuestStatus && ev.getMyStatus() === CalendarApp.GuestStatus.NO;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** Timed events in your main calendar (and study.busyCalendars): [[startMs, endMs]]. */
+function busyIntervals_(settings, fromMs, toMs) {
+  var calendars = [CalendarApp.getDefaultCalendar()];
+  settings.study.busyCalendars.forEach(function (name) {
+    CalendarApp.getCalendarsByName(name).forEach(function (c) {
+      calendars.push(c);
+    });
+  });
+  var seen = {};
+  var busy = [];
+  calendars.forEach(function (calendar) {
+    if (!calendar || seen[calendar.getId()]) return;
+    seen[calendar.getId()] = true;
+    calendar.getEvents(new Date(fromMs), new Date(toMs)).forEach(function (ev) {
+      // All-day events (deadlines, holidays) don't block time; our own events are handled separately.
+      if (ev.isAllDayEvent() || ev.getTag(TAG_ID_) || isDeclined_(ev)) return;
+      busy.push([ev.getStartTime().getTime(), ev.getEndTime().getTime()]);
+    });
+  });
+  return busy;
+}
+
+/** {sessionKey: 'date|assessmentKey'} remembered for `calendar` ({} for a new calendar). */
+function loadStudyState_(calendar) {
+  if (!calendar) return {};
+  try {
+    var state = JSON.parse(PropertiesService.getScriptProperties().getProperty(PROP_STUDY_) || '{}');
+    return state.calendarId === calendar.getId() ? state.s || {} : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveStudyState_(calendar, entries) {
+  var keys = Object.keys(entries).sort(function (a, b) {
+    return entries[a] < entries[b] ? -1 : entries[a] > entries[b] ? 1 : 0;
+  });
+  var json = JSON.stringify({ calendarId: calendar.getId(), s: entries });
+  while (json.length > MAX_STATE_CHARS_ && keys.length) {
+    delete entries[keys.shift()];
+    json = JSON.stringify({ calendarId: calendar.getId(), s: entries });
+  }
+  var values = {};
+  values[PROP_STUDY_] = json;
+  values[PROP_STUDY_CALENDAR_ID_] = calendar.getId();
+  PropertiesService.getScriptProperties().setProperties(values);
+}
+
+function studyStateEntry_(session, tz) {
+  return wallClockInZone_(new Date(session.start), tz).date + '|' + hash_(session.forId);
+}
+
+/**
+ * Sessions the planner made before that are gone now were deleted by you.
+ * Returns {counts: {assessmentId: n}, entries: {sessionKey: entry}} for the
+ * ones still worth remembering.
+ */
+function studyTombstones_(state, sessions, assessments, today) {
+  var present = {};
+  sessions.forEach(function (s) {
+    present[hash_(s.id)] = true;
+  });
+  var byKey = {};
+  assessments.forEach(function (a) {
+    byKey[hash_(a.id)] = a.id;
+  });
+  var oldest = addDays_(today, -STUDY_MEMORY_DAYS_);
+  var counts = {};
+  var entries = {};
+  Object.keys(state).forEach(function (key) {
+    if (present[key]) return;
+    var parts = String(state[key]).split('|');
+    var forId = byKey[parts[1]];
+    if (!forId || parts[0] < oldest) return;
+    counts[forId] = (counts[forId] || 0) + 1;
+    entries[key] = state[key];
+  });
+  return { counts: counts, entries: entries };
+}
+
+function applyStudyPlan_(calendar, plan, settings, deadline) {
+  var study = settings.study;
+  var color = colorId_(study.color);
+  var reminder = Number(study.reminderMinutes);
+  var result = { created: [], updated: 0, removed: [], errors: [], postponed: 0 };
+  plan.create.forEach(function (s) {
+    if (Date.now() > deadline) {
+      result.postponed++;
+      return;
+    }
+    try {
+      var ev = calendar.createEvent(s.title, new Date(s.start), new Date(s.end), { description: s.description });
+      ev.setTag(TAG_ID_, s.id);
+      ev.setTag(TAG_STUDY_FOR_, s.forId);
+      ev.setTag(TAG_PLANNED_, String(s.start));
+      if (color) ev.setColor(color);
+      ev.removeAllReminders();
+      if (reminder > 0) ev.addPopupReminder(reminder);
+      ev.setTag(TAG_HASH_, s.hash);
+      result.created.push(s);
+    } catch (e) {
+      result.errors.push('Could not add study session "' + s.title + '": ' + e.message);
+    }
+    pause_();
+  });
+  plan.update.forEach(function (u) {
+    if (Date.now() > deadline) {
+      result.postponed++;
+      return;
+    }
+    try {
+      u.existing.ref.setTitle(u.desired.title);
+      u.existing.ref.setDescription(u.desired.description);
+      u.existing.ref.setTag(TAG_HASH_, u.desired.hash);
+      result.updated++;
+    } catch (e) {
+      result.errors.push('Could not update study session "' + u.desired.title + '": ' + e.message);
+    }
+    pause_();
+  });
+  plan.remove.forEach(function (r) {
+    if (Date.now() > deadline) {
+      result.postponed++;
+      return;
+    }
+    try {
+      r.existing.ref.deleteEvent();
+      result.removed.push(r.existing);
+    } catch (e) {
+      result.errors.push('Could not remove study session "' + r.existing.title + '": ' + e.message);
+    }
+    pause_();
+  });
+  return result;
+}
+
+/** What to remember after applying: every session still on the calendar, plus deleted ones. */
+function nextStudyState_(plan, applied, tombstoneEntries, tz, today) {
+  var oldest = addDays_(today, -STUDY_MEMORY_DAYS_);
+  var entries = Object.assign({}, tombstoneEntries);
+  var removed = applied.removed;
+  var onCalendar = plan.keep.concat(
+    plan.update.map(function (u) {
+      return u.existing;
+    }),
+    plan.remove
+      .map(function (r) {
+        return r.existing;
+      })
+      .filter(function (s) {
+        return removed.indexOf(s) === -1;
+      }),
+    applied.created
+  );
+  onCalendar.forEach(function (s) {
+    if (!s.forId) return;
+    var entry = studyStateEntry_(s, tz);
+    if (entry.slice(0, 10) >= oldest) entries[hash_(s.id)] = entry;
+  });
+  return entries;
+}
+
+function formatSessionTime_(s, tz) {
+  var start = wallClockInZone_(new Date(s.start), tz);
+  var end = wallClockInZone_(new Date(s.end), tz);
+  return formatHumanDate_(start.date).slice(0, 3) + ' ' + start.date + ' ' + start.time + '–' + end.time;
+}
+
+function logStudyPlan_(plan, aiResult, settings, tz, verbose) {
+  var lines = ['Study plan for ' + plan.summaries.length + ' upcoming assessment(s):'];
+  plan.summaries.forEach(function (s) {
+    var why = s.grade ? s.grade.className + ' ' + s.grade.grade + '% → ×' + s.gradeFactor.toFixed(2) : 'no grade';
+    if (s.effort !== 'normal') why += ', AI says ' + s.effort;
+    var counts = [];
+    if (s.done) counts.push(s.done + ' done');
+    if (s.kept) counts.push(s.kept + ' planned');
+    if (s.created) counts.push(s.created + ' new');
+    if (s.deleted) counts.push(s.deleted + ' you deleted');
+    lines.push(
+      '  ' + s.assessment.date + '  ' + assessmentName_(s.assessment) + ': ' + formatMinutes_(s.minutes) + ', ' +
+        s.sessionsWanted + ' session(s) [' + why + ']' + (counts.length ? ' (' + counts.join(', ') + ')' : '')
+    );
+    if (s.unplaced) {
+      lines.push(
+        "    ! couldn't fit " + s.unplaced + ' session(s) before the due date. Add study hours or raise maxMinutesPerDay.'
+      );
+    }
+  });
+  if (settings.ai.enabled) {
+    if (aiResult.asked) lines.push('AI (' + settings.ai.model + ') planned ' + aiResult.asked + ' assessment(s).');
+    if (aiResult.waiting && !aiResult.note) lines.push('AI will look at ' + aiResult.waiting + ' more on the next sync.');
+    if (aiResult.note) lines.push(aiResult.note);
+  }
+  lines.push(
+    'Study calendar: ' + plan.create.length + ' to add, ' + plan.update.length + ' to update, ' + plan.remove.length +
+      ' to remove.'
+  );
+  if (verbose) {
+    var byStart = function (a, b) {
+      return a.start - b.start;
+    };
+    plan.create.slice().sort(byStart).forEach(function (s) {
+      lines.push('  + ' + formatSessionTime_(s, tz) + '  ' + s.title);
+    });
+    plan.update.forEach(function (u) {
+      lines.push('  ~ ' + formatSessionTime_(u.existing, tz) + '  ' + u.desired.title);
+    });
+    plan.remove.forEach(function (r) {
+      lines.push('  - ' + formatSessionTime_(r.existing, tz) + '  ' + r.existing.title + '   [' + r.reason + ']');
+    });
+  }
+  console.log(lines.join('\n'));
+}
+
+/**
+ * Plans (or with opts.dryRun, previews) study sessions for the assessments
+ * in `syncPlan`. Returns {created, updated, removed, errors}.
+ */
+function runStudy_(settings, syncPlan, tz, opts) {
+  var now = Date.now();
+  var today = wallClockInZone_(new Date(now), tz).date;
+  var assessments = studyAssessments_(syncPlan).filter(function (a) {
+    return a.date >= today;
+  });
+  var labels = kindLabels_(settings);
+  var aiResult = getStudyAdvice_(assessments, settings, labels);
+  var calendar = opts.dryRun ? findStudyCalendar_(settings) : getOrCreateStudyCalendar_(settings);
+  var lastDay = addDays_(today, Number(settings.lookaheadDays) + 1);
+  var sessions = calendar ? listStudySessions_(calendar, addDays_(today, -STUDY_HISTORY_DAYS_), lastDay, tz) : [];
+  var tombstones = studyTombstones_(loadStudyState_(calendar), sessions, assessments, today);
+  var plan = planStudy_({
+    assessments: assessments,
+    sessions: sessions,
+    busy: busyIntervals_(settings, now, zonedWallTimeToInstant_(lastDay, '00:00', tz).getTime()),
+    tombstones: tombstones.counts,
+    gradeOf: buildGradeLookup_(gradeRecords_(settings)),
+    advice: aiResult.advice,
+    study: settings.study,
+    kindLabels: labels,
+    now: now,
+    today: today,
+    tz: tz,
+  });
+  logStudyPlan_(plan, aiResult, settings, tz, opts.dryRun);
+  if (opts.dryRun) return { created: 0, updated: 0, removed: 0, errors: [] };
+
+  var applied = applyStudyPlan_(calendar, plan, settings, opts.deadline);
+  saveStudyState_(calendar, nextStudyState_(plan, applied, tombstones.entries, tz, today));
+  console.log(
+    'Study sessions: ' + applied.created.length + ' added, ' + applied.updated + ' updated, ' + applied.removed.length +
+      ' removed.' + (applied.postponed ? ' ' + applied.postponed + ' left for the next sync (ran out of time).' : '')
+  );
+  return {
+    created: applied.created.length,
+    updated: applied.updated,
+    removed: applied.removed.length,
+    errors: applied.errors,
+  };
+}
+
+// --- Functions you can run --------------------------------------------------
+
+/** Prints the grades the planner knows about. */
+function showGrades() {
+  var settings = loadSettings_();
+  var stored = storedGrades_();
+  var lines = [];
+  if (stored && stored.classes && stored.classes.length) {
+    lines.push('From the bookmark (' + stored.receivedAt + '):');
+    stored.classes.forEach(function (c) {
+      lines.push('  ' + c.name + ': ' + c.grade + '%');
+    });
+  } else {
+    lines.push('Nothing from the grades bookmark yet. Run makeGradesBookmarklet() to set it up.');
+  }
+  var typed = Object.keys(settings.study.grades || {});
+  if (typed.length) {
+    lines.push('Typed into Settings.gs (these win):');
+    typed.forEach(function (name) {
+      lines.push('  ' + name + ': ' + settings.study.grades[name] + '%');
+    });
+  }
+  lines.push('', 'Run preview() to see which grade each assessment uses.');
+  console.log(lines.join('\n'));
+}
+
+/** Prints the "Send grades" bookmark to add to your browser. */
+function makeGradesBookmarklet() {
+  var settings = loadSettings_();
+  var code = gradesBookmarkletCode_(webAppUrl_(settings), gradesToken_());
+  console.log(
+    [
+      'Your "Send grades" bookmark is ready. To add it:',
+      '1. Show your bookmarks bar (Ctrl+Shift+B, or Cmd+Shift+B on a Mac).',
+      '2. Right-click the bar and choose "Add page..." (Chrome/Edge) or "Add Bookmark..." (Firefox).',
+      '3. Name it "Send grades". For the URL, copy the whole next line (it starts with javascript:).',
+      '',
+      code,
+      '',
+      'Then open Blackbaud, sign in, and click the bookmark. Keep it private: it can update your grades.',
+    ].join('\n')
+  );
+}
+
+/** Checks the Ollama key and model, and shows a sample answer. */
+function checkAi() {
+  var settings = loadSettings_();
+  var ai = settings.ai;
+  var apiKey = PropertiesService.getScriptProperties().getProperty(OLLAMA_KEY_PROPERTY_);
+  if (!apiKey && isOllamaCloud_(ai.baseUrl)) {
+    console.log('No OLLAMA_API_KEY yet. Add it in Project Settings → Script properties (see the README).');
+    return;
+  }
+  var tags = ollamaFetch_(ai, apiKey, '/api/tags');
+  var names = ((tags && tags.models) || []).map(function (m) {
+    return m.name || m.model;
+  });
+  console.log('Models you can use (' + names.length + '): ' + names.join(', '));
+  if (names.length && names.indexOf(ai.model) === -1) {
+    console.warn('Your ai.model "' + ai.model + '" is not in that list. Pick one of them for ai.model in Settings.gs.');
+  }
+  var sample = askOllamaForAdvice_(
+    [{ input: { kind: 'Test', class: 'Biology', title: 'Unit 3 Test', due: '2026-10-01', details: 'Cell membranes, transport, osmosis.' } }],
+    ai,
+    apiKey
+  );
+  console.log('Sample answer from ' + ai.model + ': ' + JSON.stringify(sample.a1 || sample));
+  console.log('The AI is working.');
+}
+
+/** Deletes upcoming study sessions and plans them again from scratch. */
+function replanStudySessions() {
+  var settings = loadSettings_();
+  var tz = timeZoneOf_(settings);
+  var calendar = findStudyCalendar_(settings);
+  var removed = 0;
+  if (calendar) {
+    var now = Date.now();
+    var today = wallClockInZone_(new Date(now), tz).date;
+    listStudySessions_(calendar, today, addDays_(today, Number(settings.lookaheadDays) + 1), tz).forEach(function (s) {
+      if (s.start > now) {
+        s.ref.deleteEvent();
+        removed++;
+        pause_();
+      }
+    });
+  }
+  PropertiesService.getScriptProperties().deleteProperty(PROP_STUDY_);
+  console.log('Removed ' + removed + ' upcoming study session(s). Planning again now.');
+  return syncNow();
+}
+
+/** Deletes every study session this tool made. */
+function removeStudySessions() {
+  var settings = loadSettings_();
+  var tz = timeZoneOf_(settings);
+  var calendar = findStudyCalendar_(settings);
+  var removed = 0;
+  if (calendar) {
+    var today = wallClockInZone_(new Date(), tz).date;
+    listStudySessions_(calendar, addDays_(today, -730), addDays_(today, 730), tz).forEach(function (s) {
+      s.ref.deleteEvent();
+      removed++;
+      pause_();
+    });
+  }
+  PropertiesService.getScriptProperties().deleteProperty(PROP_STUDY_);
+  console.log('Removed ' + removed + ' study session(s).');
+  if (settings.study.enabled) console.log('The planner is still on. Set study.enabled to false in Settings.gs to stop it.');
+}
+
+// ===== Planner.js =====
+
+/**
+ * Study planner: decides how much to study for each upcoming assessment and
+ * when. Pure logic, no Google services.
+ *
+ * How much: the kind's usual study time (study.kinds) × a grade factor (more
+ * time when your grade in that class is below study.targetGrade) × the AI's
+ * effort estimate, split into sessions of study.sessionMinutes.
+ *
+ * When: on the days before the due date (up to daysAhead days), inside your
+ * study hours, around busy events, and never more than maxMinutesPerDay a
+ * day. Tests and quizzes are "spaced" (sessions bunch up closer to the test);
+ * projects and essays are spread "even"ly.
+ *
+ * Sessions already on the calendar are kept where they are, so the plan
+ * doesn't reshuffle every sync. Sessions you moved stay where you put them;
+ * sessions you deleted aren't added back.
+ */
+
+var EFFORT_FACTORS_ = { light: 0.75, normal: 1, heavy: 1.3 };
+var WEEKDAY_KEYS_ = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+// Days before the due date to aim for with "spaced" study, in order.
+var SPACED_OFFSETS_ = [1, 2, 4, 7, 11, 16, 22, 29, 37, 46];
+// Don't start a new session less than this long from now.
+var SESSION_LEAD_MINUTES_ = 30;
+var SLOT_STEP_MINUTES_ = 15;
+
+/** '16:00-21:00, 7:00-7:45' -> [[960, 1260], [420, 465]]; '' -> []; null if invalid. */
+function parseHourRanges_(text) {
+  var spec = String(text === undefined || text === null ? '' : text).trim();
+  if (!spec || /^(none|off|-)$/i.test(spec)) return [];
+  var ranges = [];
+  var parts = spec.split(',');
+  for (var i = 0; i < parts.length; i++) {
+    var m = /^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$/.exec(parts[i]);
+    if (!m) return null;
+    var start = +m[1] * 60 + +m[2];
+    var end = +m[3] * 60 + +m[4];
+    if (+m[2] > 59 || +m[4] > 59 || start >= end || end > 24 * 60) return null;
+    ranges.push([start, end]);
+  }
+  return ranges.sort(function (a, b) {
+    return a[0] - b[0];
+  });
+}
+
+function dayOfWeek_(date) {
+  var p = date.split('-').map(Number);
+  return new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay();
+}
+
+/** Study windows for a date: [[startMinute, endMinute]]. Day keys (mon..sun) beat weekdays/weekends. */
+function studyWindowsFor_(date, hours) {
+  var weekday = dayOfWeek_(date);
+  var key = WEEKDAY_KEYS_[weekday];
+  var spec = hours[key] !== undefined ? hours[key] : weekday === 0 || weekday === 6 ? hours.weekends : hours.weekdays;
+  return parseHourRanges_(spec) || [];
+}
+
+function minutesToTime_(minutes) {
+  return pad2_(Math.floor(minutes / 60)) + ':' + pad2_(minutes % 60);
+}
+
+/** 1× at the target grade; 5 points below it adds 25%. Limited to 0.6×–2×. */
+function gradeFactor_(grade, targetGrade) {
+  if (typeof grade !== 'number' || !isFinite(grade)) return 1;
+  return Math.min(2, Math.max(0.6, 1 + (Number(targetGrade) - grade) / 20));
+}
+
+/** 'h m' text for minutes: 270 -> '4h 30m', 45 -> '45m', 120 -> '2h'. */
+function formatMinutes_(minutes) {
+  var m = Math.round(minutes);
+  var h = Math.floor(m / 60);
+  var rest = m % 60;
+  if (!h) return rest + 'm';
+  return rest ? h + 'h ' + rest + 'm' : h + 'h';
+}
+
+/** The study settings for an assessment kind (falls back to study.defaultKind). */
+function studyKind_(study, category) {
+  return mergeDeep_(study.defaultKind, (study.kinds || {})[category] || {});
+}
+
+function listDays_(from, to) {
+  var days = [];
+  for (var d = from; d <= to; d = addDays_(d, 1)) days.push(d);
+  return days;
+}
+
+/**
+ * The order in which to try days for new sessions. "spaced" aims for 1, 2,
+ * 4, 7, ... days before the due date; "even" spreads `need` sessions evenly
+ * over the free days. Every day in `days` appears once.
+ */
+function preferredDays_(spacing, days, need, dueDate, usedDays) {
+  var inRange = {};
+  days.forEach(function (d) {
+    inRange[d] = true;
+  });
+  var order = [];
+  function add(d) {
+    if (inRange[d] && order.indexOf(d) === -1) order.push(d);
+  }
+  if (spacing === 'even') {
+    var free = days.filter(function (d) {
+      return !usedDays[d];
+    });
+    for (var i = 0; i < need && free.length; i++) {
+      add(free[Math.min(free.length - 1, Math.floor(((i + 0.5) * free.length) / need))]);
+    }
+  } else {
+    SPACED_OFFSETS_.forEach(function (offset) {
+      add(addDays_(dueDate, -offset));
+    });
+  }
+  // Then everything else, latest first.
+  days.slice().reverse().forEach(add);
+  return order;
+}
+
+function overlapsAny_(intervals, start, end) {
+  for (var i = 0; i < intervals.length; i++) {
+    if (intervals[i][0] < end && intervals[i][1] > start) return true;
+  }
+  return false;
+}
+
+/**
+ * The first free slot of `minutes` on `date` inside `windows`, starting no
+ * earlier than `earliest` (ms) and at least `breakMinutes` away from anything
+ * in `occupied` ([[startMs, endMs]]). Returns {start, end} in ms, or null.
+ */
+function findSlot_(date, windows, occupied, minutes, breakMinutes, earliest, tz, instantCache) {
+  var length = minutes * 60000;
+  var gap = breakMinutes * 60000;
+  for (var w = 0; w < windows.length; w++) {
+    var from = windows[w][0];
+    var to = windows[w][1];
+    var cacheKey = date + ' ' + from;
+    var base = instantCache[cacheKey];
+    if (base === undefined) {
+      base = instantCache[cacheKey] = zonedWallTimeToInstant_(date, minutesToTime_(from), tz).getTime();
+    }
+    for (var t = from; t + minutes <= to; t += SLOT_STEP_MINUTES_) {
+      var start = base + (t - from) * 60000;
+      if (start < earliest) continue;
+      if (!overlapsAny_(occupied, start - gap, start + length + gap)) return { start: start, end: start + length };
+    }
+  }
+  return null;
+}
+
+function assessmentName_(a) {
+  return a.title + (a.course ? ' (' + a.course + ')' : '');
+}
+
+/** Title and description for session `k` (0-based) of `total` for assessment `a`. */
+function sessionContent_(a, info, k, total, study) {
+  var steps = (info.advice && info.advice.steps) || [];
+  var focus = steps.length ? steps[Math.min(steps.length - 1, Math.floor((k * steps.length) / total))] : '';
+  var name = assessmentName_(a);
+  var title = (study.icon ? study.icon + ' ' : '') + (focus ? name + ': ' + focus : 'Study for ' + name);
+  var why = ['Usual study time (' + info.kindLabel.toLowerCase() + '): ' + formatMinutes_(info.baseMinutes) + '.'];
+  if (info.grade) {
+    why.push(
+      'Your grade in ' + info.grade.className + ' is ' + info.grade.grade + '%, so it gets ' +
+        info.gradeFactor.toFixed(2).replace(/\.?0+$/, '') + '× that.'
+    );
+  } else {
+    why.push('No grade found for this class, so it gets the usual time.');
+  }
+  if (info.effort !== 'normal') why.push('The AI rated it ' + info.effort + ' (' + EFFORT_FACTORS_[info.effort] + '×).');
+  why.push('Plan: about ' + formatMinutes_(info.minutes) + ' in ' + info.sessionsWanted + ' session(s).');
+  var lines = ['Session ' + (k + 1) + ' of ' + total + ' for ' + name + ', due ' + formatHumanDate_(a.date) + '.'];
+  if (focus) lines.push('Focus: ' + focus);
+  lines.push('', why.join(' '), '', '(Planned by Blackbaud → Google Calendar. Move this session and it stays put; delete it to skip it.)');
+  var description = lines.join('\n');
+  return { title: title, description: description, hash: hash_(JSON.stringify([title, description])) };
+}
+
+/**
+ * Plans study sessions.
+ *
+ * input = {
+ *   assessments: [{id, title, course, category, date, ...}]  (synced assessments)
+ *   sessions: [{id, forId, start, end, plannedStart, hash, ...}]  (existing, ms)
+ *   busy: [[startMs, endMs]]            (other calendars' timed events)
+ *   tombstones: {assessmentId: count}   (sessions the user deleted)
+ *   gradeOf: function (assessment) -> {className, grade} | null
+ *   advice: {assessmentId: {effort, steps}}   (from the AI, optional)
+ *   study, kindLabels, now (ms), today ('YYYY-MM-DD'), tz
+ * }
+ *
+ * Returns {create: [session], update: [{existing, desired}],
+ *          remove: [{existing, reason}], keep: [session],
+ *          summaries: [{assessment, ...info, done, kept, created, deleted, unplaced}]}.
+ * New sessions look like {id, forId, date, start, end, title, description, hash}.
+ */
+function planStudy_(input) {
+  var study = input.study;
+  var now = input.now;
+  var tz = input.tz;
+  var plan = { create: [], update: [], remove: [], keep: [], summaries: [] };
+  var instantCache = {};
+  var earliest = now + SESSION_LEAD_MINUTES_ * 60000;
+
+  var assessments = input.assessments
+    .filter(function (a) {
+      return a.date >= input.today;
+    })
+    .sort(function (a, b) {
+      return a.date < b.date ? -1 : a.date > b.date ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+  var byId = {};
+  assessments.forEach(function (a) {
+    byId[a.id] = a;
+  });
+
+  // Sessions whose assessment is gone: drop the future ones, keep the history.
+  var sessionsFor = {};
+  var occupied = input.busy.slice();
+  var dayMinutes = {};
+  function book(session) {
+    occupied.push([session.start, session.end]);
+    var date = wallClockInZone_(new Date(session.start), tz).date;
+    dayMinutes[date] = (dayMinutes[date] || 0) + (session.end - session.start) / 60000;
+  }
+  input.sessions.forEach(function (s) {
+    if (byId[s.forId]) {
+      (sessionsFor[s.forId] = sessionsFor[s.forId] || []).push(s);
+    } else if (s.end > now) {
+      plan.remove.push({ existing: s, reason: 'its assessment is no longer coming up' });
+    }
+  });
+
+  // First pass: decide which existing sessions stay, so every kept session
+  // blocks its time before anything new is placed.
+  var decided = assessments.map(function (a) {
+    var kind = studyKind_(study, a.category);
+    var grade = input.gradeOf(a);
+    var advice = (input.advice || {})[a.id] || null;
+    var effort = advice && EFFORT_FACTORS_[advice.effort] ? advice.effort : 'normal';
+    var gradeFactor = gradeFactor_(grade && grade.grade, study.targetGrade);
+    var minutes = Number(kind.minutes) * gradeFactor * EFFORT_FACTORS_[effort];
+    var wanted = Math.max(1, Math.min(Number(study.maxSessionsPerAssessment), Math.round(minutes / Number(study.sessionMinutes))));
+    var info = {
+      kind: kind,
+      kindLabel: (input.kindLabels || {})[a.category] || a.category,
+      baseMinutes: Number(kind.minutes),
+      grade: grade,
+      gradeFactor: gradeFactor,
+      advice: advice,
+      effort: effort,
+      minutes: minutes,
+      sessionsWanted: wanted,
+    };
+
+    var existing = (sessionsFor[a.id] || []).slice().sort(function (x, y) {
+      return x.start - y.start;
+    });
+    var done = [];
+    var kept = [];
+    existing.forEach(function (s) {
+      var date = wallClockInZone_(new Date(s.start), tz).date;
+      var movedByUser = s.plannedStart !== undefined && s.plannedStart !== null && s.plannedStart !== s.start;
+      if (s.end <= now) {
+        done.push(s);
+      } else if (date > a.date) {
+        plan.remove.push({ existing: s, reason: 'it is after the due date' });
+      } else if (!movedByUser && (date === a.date || overlapsAny_(input.busy, s.start, s.end))) {
+        plan.remove.push({ existing: s, reason: date === a.date ? 'the due date moved' : 'something else is scheduled then' });
+      } else {
+        kept.push(s);
+      }
+    });
+    var deleted = (input.tombstones || {})[a.id] || 0;
+    var extra = done.length + kept.length + deleted - wanted;
+    while (extra > 0 && kept.length) {
+      plan.remove.push({ existing: kept.shift(), reason: 'fewer sessions are needed now' });
+      extra--;
+    }
+    kept.forEach(book);
+    done.forEach(book);
+    return { a: a, info: info, done: done, kept: kept, deleted: deleted, created: [], unplaced: 0 };
+  });
+
+  // Second pass: place new sessions, earliest due date first.
+  decided.forEach(function (d) {
+    var a = d.a;
+    var kind = d.info.kind;
+    var need = d.info.sessionsWanted - d.done.length - d.kept.length - d.deleted;
+    // Nothing can be added for something due today.
+    if (need <= 0 || a.date === input.today) return;
+    var from = addDays_(a.date, -Number(kind.daysAhead));
+    if (from < input.today) from = input.today;
+    var to = addDays_(a.date, -1);
+    var days = from <= to ? listDays_(from, to) : [];
+    var used = {};
+    d.done.concat(d.kept).forEach(function (s) {
+      used[wallClockInZone_(new Date(s.start), tz).date] = true;
+    });
+    var order = preferredDays_(kind.spacing, days, need, a.date, used);
+    var length = Number(study.sessionMinutes);
+    for (var n = 0; n < need; n++) {
+      var slot = null;
+      for (var pass = 0; pass < 2 && !slot; pass++) {
+        for (var i = 0; i < order.length && !slot; i++) {
+          var day = order[i];
+          if (pass === 0 && used[day]) continue;
+          if ((dayMinutes[day] || 0) + length > Number(study.maxMinutesPerDay)) continue;
+          slot = findSlot_(day, studyWindowsFor_(day, study.hours), occupied, length, Number(study.breakMinutes), earliest, tz, instantCache);
+          if (slot) slot.date = day;
+        }
+      }
+      if (!slot) {
+        d.unplaced++;
+        continue;
+      }
+      var session = { id: 'study:' + a.id + ':' + slot.start, forId: a.id, date: slot.date, start: slot.start, end: slot.end };
+      used[slot.date] = true;
+      book(session);
+      d.created.push(session);
+    }
+  });
+
+  // Titles and descriptions depend on each session's place in the sequence.
+  decided.forEach(function (d) {
+    var all = d.done.concat(d.kept, d.created).sort(function (x, y) {
+      return x.start - y.start;
+    });
+    all.forEach(function (s, k) {
+      var content = sessionContent_(d.a, d.info, k, all.length, study);
+      if (d.created.indexOf(s) !== -1) {
+        s.title = content.title;
+        s.description = content.description;
+        s.hash = content.hash;
+        plan.create.push(s);
+      } else if (d.kept.indexOf(s) !== -1 && s.hash !== content.hash) {
+        plan.update.push({ existing: s, desired: content });
+      } else {
+        plan.keep.push(s);
+      }
+    });
+    plan.summaries.push(
+      Object.assign({ assessment: d.a }, d.info, {
+        done: d.done.length,
+        kept: d.kept.length,
+        created: d.created.length,
+        deleted: d.deleted,
+        unplaced: d.unplaced,
+      })
+    );
+  });
+  return plan;
+}
+
+// ===== Grades.js =====
+
+/**
+ * Class grades for the study planner.
+ *
+ * Grades arrive from the "Send grades" bookmark: you click it while signed in
+ * to Blackbaud, it reads your class averages there and posts them to this
+ * script's web app (doPost), which stores them in Script Properties. Grades
+ * typed into Settings.gs (study.grades) take priority over sent ones.
+ *
+ * Grades stay in your Google account; they are never sent to the AI.
+ */
+
+var GRADES_PROPERTY_ = 'B2C_GRADES';
+var GRADES_TOKEN_PROPERTY_ = 'B2C_GRADES_TOKEN';
+var MAX_GRADES_PAYLOAD_CHARS_ = 20000;
+
+/** Lower-case words only, for comparing names. */
+function simplifyText_(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/** 'AP Biology - 2 (B)' -> 'AP Biology' (drops block labels and section numbers). */
+function displayClassName_(name) {
+  return String(name || '')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\s+-\s*[A-Za-z]?\d+[A-Za-z]?\s*$/, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Returns gradeOf(assessment) -> {className, grade} | null. A class matches
+ * when its name (without section/block) appears in the assessment's class,
+ * title or feed title; the longest matching name wins. Later records win
+ * over earlier ones with the same name.
+ */
+function buildGradeLookup_(records) {
+  var byKey = {};
+  records.forEach(function (r) {
+    var className = displayClassName_(r.name);
+    var key = simplifyText_(className);
+    if (key && typeof r.grade === 'number' && isFinite(r.grade)) {
+      byKey[key] = { className: className, grade: r.grade, key: key };
+    }
+  });
+  var entries = Object.keys(byKey)
+    .map(function (k) {
+      return byKey[k];
+    })
+    .sort(function (a, b) {
+      return b.key.length - a.key.length;
+    });
+  return function gradeOf(a) {
+    var texts = [a.course, a.summary, a.title]
+      .filter(Boolean)
+      .map(function (t) {
+        return ' ' + simplifyText_(t) + ' ';
+      });
+    for (var i = 0; i < entries.length; i++) {
+      for (var j = 0; j < texts.length; j++) {
+        if (texts[j].indexOf(' ' + entries[i].key + ' ') !== -1) {
+          return { className: entries[i].className, grade: entries[i].grade };
+        }
+      }
+    }
+    return null;
+  };
+}
+
+/** Grades sent by the bookmark: {receivedAt, classes: [{name, grade}]} or null. */
+function storedGrades_() {
+  var raw = PropertiesService.getScriptProperties().getProperty(GRADES_PROPERTY_);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+
+/** All grade records: sent ones first, then typed ones (which win). */
+function gradeRecords_(settings) {
+  var records = [];
+  var stored = storedGrades_();
+  if (stored && Array.isArray(stored.classes)) records = records.concat(stored.classes);
+  var typed = settings.study.grades || {};
+  Object.keys(typed).forEach(function (name) {
+    records.push({ name: name, grade: Number(typed[name]) });
+  });
+  return records;
+}
+
+/** Checks what the bookmark sent. Returns {classes} or throws a readable Error. */
+function validateGradesPayload_(raw, expectedToken) {
+  if (!expectedToken) throw new Error("Grades aren't set up yet. In the script, run makeGradesBookmarklet() first.");
+  var text = String(raw || '');
+  if (!text) throw new Error('Nothing was sent.');
+  if (text.length > MAX_GRADES_PAYLOAD_CHARS_) throw new Error('That was too much data to be grades.');
+  var data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    throw new Error("That wasn't readable grade data.");
+  }
+  if (!data || data.token !== expectedToken) {
+    throw new Error('This bookmark is out of date. Run makeGradesBookmarklet() again and replace the bookmark.');
+  }
+  if (!Array.isArray(data.classes) || !data.classes.length) throw new Error('No grades were sent.');
+  if (data.classes.length > 40) throw new Error('Too many classes were sent.');
+  var seen = {};
+  var classes = [];
+  data.classes.forEach(function (c) {
+    var name = String((c && c.name) || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 150);
+    var grade = Number(c && c.grade);
+    if (!name || !isFinite(grade) || grade < 0 || grade > 150 || seen[name.toLowerCase()]) return;
+    seen[name.toLowerCase()] = true;
+    classes.push({ name: name, grade: Math.round(grade * 10) / 10 });
+  });
+  if (!classes.length) throw new Error('None of the grades sent were usable.');
+  return { classes: classes };
+}
+
+function escapeHtml_(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function gradesPage_(heading, bodyHtml) {
+  return (
+    '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">' +
+    '<style>body{font-family:system-ui,sans-serif;max-width:34rem;margin:2rem auto;padding:0 1rem;line-height:1.5}</style>' +
+    '</head><body><h2>' + escapeHtml_(heading) + '</h2>' + bodyHtml + '</body></html>'
+  );
+}
+
+function gradesResultPage_(result) {
+  if (!result.ok) return gradesPage_('Grades not saved', '<p>' + escapeHtml_(result.message) + '</p>');
+  var items = result.classes
+    .map(function (c) {
+      return '<li>' + escapeHtml_(c.name) + ': ' + c.grade + '%</li>';
+    })
+    .join('');
+  return gradesPage_(
+    'Saved your grades',
+    '<ul>' + items + '</ul><p>Your study plan uses them from the next sync. You can close this tab.</p>'
+  );
+}
+
+/** Web app endpoint the bookmark posts to. */
+function doPost(e) {
+  var result;
+  try {
+    var raw = (e && e.parameter && e.parameter.payload) || (e && e.postData && e.postData.contents) || '';
+    var data = validateGradesPayload_(raw, PropertiesService.getScriptProperties().getProperty(GRADES_TOKEN_PROPERTY_));
+    PropertiesService.getScriptProperties().setProperty(
+      GRADES_PROPERTY_,
+      JSON.stringify({ receivedAt: new Date().toISOString(), classes: data.classes })
+    );
+    result = { ok: true, classes: data.classes };
+  } catch (err) {
+    result = { ok: false, message: err.message };
+  }
+  return HtmlService.createHtmlOutput(gradesResultPage_(result)).setTitle('Blackbaud → Calendar');
+}
+
+function doGet() {
+  return HtmlService.createHtmlOutput(
+    gradesPage_(
+      'Blackbaud → Calendar',
+      '<p>This is the grades inbox for your study planner. Use your "Send grades" bookmark on Blackbaud to send grades here.</p>'
+    )
+  ).setTitle('Blackbaud → Calendar');
+}
+
+/** The secret the bookmark includes so only it can update your grades. */
+function gradesToken_() {
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty(GRADES_TOKEN_PROPERTY_);
+  if (!token) {
+    token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+    props.setProperty(GRADES_TOKEN_PROPERTY_, token);
+  }
+  return token;
+}
+
+function webAppUrl_(settings) {
+  var fromSettings = String(settings.study.webAppUrl || '').trim();
+  if (fromSettings) return fromSettings;
+  var service = ScriptApp.getService();
+  var url = service && service.getUrl();
+  if (url && /\/exec$/.test(url)) return url;
+  throw new Error(
+    'Deploy the script as a web app first (README: "Grades bookmark"), then paste its Web app URL ' +
+      'into study.webAppUrl in Settings.gs.'
+  );
+}
+
+/**
+ * Runs in your browser as a bookmark on your Blackbaud site, not in Apps
+ * Script. While you're signed in it can read the same data the Blackbaud
+ * pages show you: it looks up your current classes and their averages, asks
+ * you to confirm, and posts them to this script's web app in a new tab.
+ *
+ * Blackbaud's data addresses aren't documented, so each step reports clearly
+ * where it failed. No // comments in here: it gets squeezed into a bookmark.
+ */
+async function gradesGrabber_(config) {
+  var title = 'Blackbaud to Calendar';
+  async function getJson(path) {
+    var where = path.split('?')[0];
+    var res = await fetch(location.origin + path, { credentials: 'include', headers: { Accept: 'application/json' } });
+    var text = await res.text();
+    if (!res.ok) throw new Error(where + ' answered HTTP ' + res.status);
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      throw new Error(where + " didn't send data (are you signed in?)");
+    }
+  }
+  function pick(obj, paths) {
+    for (var i = 0; i < paths.length; i++) {
+      var value = obj;
+      var parts = paths[i].split('.');
+      for (var j = 0; j < parts.length && value !== undefined && value !== null; j++) value = value[parts[j]];
+      if (value !== undefined && value !== null && value !== '') return value;
+    }
+    return undefined;
+  }
+  try {
+    if (!/myschoolapp\.com$|blackbaud/i.test(location.hostname)) {
+      if (!confirm(title + ": this doesn't look like your Blackbaud site. Try anyway?")) return;
+    }
+    var context = await getJson('/api/webapp/context');
+    var userId = pick(context, ['UserInfo.UserId', 'MasterUserInfo.UserId', 'UserId', 'userId']);
+    if (!userId) throw new Error('could not find your student ID');
+    var now = new Date();
+    var y = now.getFullYear();
+    var year = encodeURIComponent(now.getMonth() >= 6 ? y + ' - ' + (y + 1) : y - 1 + ' - ' + y);
+    var terms = await getJson('/api/DataDirect/StudentGroupTermList/?studentUserId=' + userId + '&schoolYearLabel=' + year + '&personaId=2');
+    terms = Array.isArray(terms) ? terms : [];
+    var current = terms.filter(function (t) {
+      return t.CurrentInd === 1 || t.CurrentInd === true || t.CurrentInd === '1';
+    });
+    var durations = [];
+    (current.length ? current : terms).forEach(function (t) {
+      if (t.DurationId !== undefined && durations.indexOf(t.DurationId) === -1) durations.push(t.DurationId);
+    });
+    var groups = await getJson(
+      '/api/datadirect/ParentStudentUserAcademicGroupsGet?userId=' + userId + '&schoolYearLabel=' + year +
+        '&memberLevel=3&persona=2&durationList=' + durations.join(',') + '&markingPeriodId='
+    );
+    groups = Array.isArray(groups) ? groups : [];
+    var classes = [];
+    groups.forEach(function (g) {
+      var name = pick(g, ['sectionidentifier', 'SectionIdentifier', 'groupname', 'GroupName', 'coursename']);
+      var grade = parseFloat(pick(g, ['cumgrade', 'CumGrade', 'grade']));
+      if (!name || !isFinite(grade)) return;
+      name = String(name).trim();
+      if (classes.some(function (c) { return c.name === name; })) return;
+      classes.push({ name: name, grade: Math.round(grade * 10) / 10 });
+    });
+    if (!classes.length) throw new Error('found ' + groups.length + ' classes, but none has a grade yet');
+    var list = classes.map(function (c) { return '- ' + c.name + ': ' + c.grade + '%'; }).join('\n');
+    if (!confirm(title + ': send these grades to your study planner?\n\n' + list)) return;
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = config.url;
+    form.target = '_blank';
+    var input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'payload';
+    input.value = JSON.stringify({ token: config.token, classes: classes });
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  } catch (e) {
+    alert(
+      title + ": couldn't read your grades.\n\n" + e.message +
+        '\n\nMake sure you are signed in to Blackbaud in this tab. If it keeps happening, send this message to whoever set up the tool.'
+    );
+  }
+}
+
+/**
+ * The bookmark's address: javascript: plus the grabber with your web app URL
+ * and secret. `void` matters: a javascript: link that returns a value
+ * replaces the page with it.
+ */
+function gradesBookmarkletCode_(url, token) {
+  var source = 'void (' + gradesGrabber_.toString() + ')(' + JSON.stringify({ url: url, token: token }) + ');';
+  return 'javascript:' + encodeURIComponent(source.replace(/\n\s+/g, '\n'));
+}
+
+// ===== Ollama.js =====
+
+/**
+ * AI study advice from Ollama Cloud (https://ollama.com), used by the study
+ * planner. For each assessment the AI estimates how much work it is (light,
+ * normal or heavy) and lists what to study, in order. The planner uses that
+ * for session titles and to adjust study time.
+ *
+ * Only an assessment's kind, class, title, due date and description are
+ * sent. Grades are not. Answers are cached per assessment, so the AI is only
+ * asked again when the assessment changes.
+ *
+ * The API key is read from the script property OLLAMA_API_KEY, never from
+ * code, and is never logged.
+ */
+
+var OLLAMA_KEY_PROPERTY_ = 'OLLAMA_API_KEY';
+var AI_CACHE_PREFIX_ = 'B2C_AI_';
+var AI_EFFORTS_ = ['light', 'normal', 'heavy'];
+
+var STUDY_ADVICE_SCHEMA_ = {
+  type: 'object',
+  properties: {
+    assessments: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          effort: { type: 'string', enum: AI_EFFORTS_ },
+          steps: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['id', 'effort', 'steps'],
+      },
+    },
+  },
+  required: ['assessments'],
+};
+
+/** What the AI is told about an assessment (also what its cached answer depends on). */
+function aiInput_(a, kindLabels) {
+  return {
+    kind: (kindLabels && kindLabels[a.category]) || a.category,
+    class: a.course || '',
+    title: a.title,
+    due: a.date,
+    details: truncate_(String(a.details || '').replace(/\s+/g, ' ').trim(), 1200),
+  };
+}
+
+/** Chat messages asking for advice on `items` ([{id, kind, class, title, due, details}]). */
+function buildStudyPrompt_(items) {
+  var instructions = [
+    'For each assessment below, return an object with:',
+    '- "id": the id given.',
+    '- "effort": "light", "normal" or "heavy": how much work it is compared with a typical one of its kind. ' +
+      'Use "heavy" for cumulative, final, long or multi-unit work, "light" for short or single-topic work, ' +
+      'and "normal" when unsure.',
+    '- "steps": 2 to 6 short study steps (under 60 characters each), in the order to do them, from the first ' +
+      'study session to the last. Name concrete topics from the details when there are any. For tests and ' +
+      'quizzes, finish with practice or self-testing. For projects, essays and presentations, use milestones ' +
+      '(plan, research, draft, revise, rehearse).',
+    '',
+    'Reply with JSON only, shaped like {"assessments": [{"id": "a1", "effort": "normal", "steps": ["..."]}]}.',
+    '',
+    'Assessments:',
+    JSON.stringify(items, null, 1),
+  ].join('\n');
+  return [
+    {
+      role: 'system',
+      content:
+        'You help a high school student plan study time. You judge how much work each assessment is and ' +
+        'break its preparation into steps. You answer with JSON only.',
+    },
+    { role: 'user', content: instructions },
+  ];
+}
+
+/** Reads the model's answer into {id: {effort, steps}}; tolerant of extra text and code fences. */
+function parseStudyReply_(content) {
+  var text = String(content || '')
+    .replace(/```(?:json)?/gi, '')
+    .trim();
+  var start = text.search(/[\[{]/);
+  var end = Math.max(text.lastIndexOf('}'), text.lastIndexOf(']'));
+  if (start === -1 || end <= start) throw new Error("the AI's answer wasn't JSON");
+  var data;
+  try {
+    data = JSON.parse(text.slice(start, end + 1));
+  } catch (e) {
+    throw new Error("the AI's answer wasn't valid JSON");
+  }
+  var list = Array.isArray(data) ? data : data && Array.isArray(data.assessments) ? data.assessments : [];
+  var out = {};
+  list.forEach(function (item) {
+    if (!item || item.id === undefined || item.id === null) return;
+    var effort = String(item.effort || '').toLowerCase();
+    var steps = (Array.isArray(item.steps) ? item.steps : [])
+      .map(function (s) {
+        return String(s).replace(/\s+/g, ' ').trim();
+      })
+      .filter(Boolean)
+      .slice(0, 8)
+      .map(function (s) {
+        return truncate_(s, 80);
+      });
+    out[String(item.id)] = { effort: AI_EFFORTS_.indexOf(effort) !== -1 ? effort : 'normal', steps: steps };
+  });
+  return out;
+}
+
+function isOllamaCloud_(baseUrl) {
+  return /^https:\/\/(www\.)?ollama\.com\/?$/i.test(String(baseUrl).trim());
+}
+
+/**
+ * Calls the Ollama API (GET without payload, POST with). Throws an Error with
+ * a readable message; the API key never appears in it.
+ */
+function ollamaFetch_(ai, apiKey, path, payload) {
+  var options = { method: payload ? 'post' : 'get', muteHttpExceptions: true, headers: {} };
+  if (apiKey) options.headers.Authorization = 'Bearer ' + apiKey;
+  if (payload) {
+    options.contentType = 'application/json';
+    options.payload = JSON.stringify(payload);
+  }
+  var response;
+  try {
+    response = UrlFetchApp.fetch(String(ai.baseUrl).trim().replace(/\/+$/, '') + path, options);
+  } catch (e) {
+    var message = String(e.message);
+    if (apiKey) message = message.split(apiKey).join('…');
+    throw new Error("couldn't reach Ollama (" + message + ')');
+  }
+  var code = response.getResponseCode();
+  var text = response.getContentText();
+  if (code === 200) {
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      throw new Error("Ollama's answer wasn't readable");
+    }
+  }
+  var detail = '';
+  try {
+    detail = JSON.parse(text).error || '';
+  } catch (e) {
+    detail = text;
+  }
+  detail = truncate_(String(detail).replace(/\s+/g, ' ').trim(), 200);
+  if (code === 401 || code === 403) {
+    throw new Error('Ollama rejected the API key (HTTP ' + code + '). Check OLLAMA_API_KEY in Project Settings → Script properties.');
+  }
+  if (code === 404 && path === '/api/chat') {
+    throw new Error('Ollama doesn\'t have the model "' + ai.model + '". Run checkAi() to see the models you can use, then set ai.model in Settings.gs.');
+  }
+  if (code === 429) {
+    throw new Error("Ollama's usage limit was reached (HTTP 429). Study sessions get plain titles until it resets.");
+  }
+  throw new Error('Ollama answered HTTP ' + code + (detail ? ': ' + detail : '') + '.');
+}
+
+/** Asks the AI about a batch: [{input}] -> {index: {effort, steps}} keyed like 'a1', 'a2', ... */
+function askOllamaForAdvice_(batch, ai, apiKey) {
+  var items = batch.map(function (t, i) {
+    return Object.assign({ id: 'a' + (i + 1) }, t.input);
+  });
+  var body = ollamaFetch_(ai, apiKey, '/api/chat', {
+    model: ai.model,
+    messages: buildStudyPrompt_(items),
+    stream: false,
+    format: STUDY_ADVICE_SCHEMA_,
+    options: { temperature: 0.2 },
+  });
+  return parseStudyReply_(body && body.message && body.message.content);
+}
+
+/**
+ * AI advice for `assessments`: cached answers plus fresh ones for up to
+ * ai.maxPerRun assessments that are new or changed (soonest first).
+ * Returns {advice: {assessmentId: {effort, steps}}, asked, waiting, note}.
+ * Never throws: problems end up in `note` and the plan goes on without AI.
+ */
+function getStudyAdvice_(assessments, settings, kindLabels) {
+  var ai = settings.ai;
+  var props = PropertiesService.getScriptProperties();
+  var all = props.getProperties();
+  var advice = {};
+  var todo = [];
+  var current = {};
+  assessments.forEach(function (a) {
+    var key = AI_CACHE_PREFIX_ + hash_(a.id);
+    current[key] = true;
+    var input = aiInput_(a, kindLabels);
+    var inputHash = hash_(JSON.stringify(input));
+    var cached = null;
+    try {
+      cached = all[key] ? JSON.parse(all[key]) : null;
+    } catch (e) {
+      cached = null;
+    }
+    if (cached && cached.h === inputHash) advice[a.id] = { effort: cached.effort, steps: cached.steps || [] };
+    else todo.push({ a: a, input: input, inputHash: inputHash, key: key });
+  });
+  // Forget answers about assessments that are gone.
+  Object.keys(all).forEach(function (key) {
+    if (key.indexOf(AI_CACHE_PREFIX_) === 0 && !current[key]) props.deleteProperty(key);
+  });
+
+  var result = { advice: advice, asked: 0, waiting: todo.length, note: '' };
+  if (!ai.enabled || !todo.length) return result;
+  var apiKey = props.getProperty(OLLAMA_KEY_PROPERTY_);
+  if (!apiKey && isOllamaCloud_(ai.baseUrl)) {
+    result.note = 'AI is off until you add OLLAMA_API_KEY in Project Settings → Script properties.';
+    return result;
+  }
+  todo.sort(function (x, y) {
+    return x.a.date < y.a.date ? -1 : x.a.date > y.a.date ? 1 : 0;
+  });
+  var batch = todo.slice(0, Number(ai.maxPerRun));
+  try {
+    var answers = askOllamaForAdvice_(batch, ai, apiKey);
+    batch.forEach(function (t, i) {
+      var answer = answers['a' + (i + 1)];
+      if (!answer) return;
+      advice[t.a.id] = answer;
+      props.setProperty(t.key, JSON.stringify({ h: t.inputHash, effort: answer.effort, steps: answer.steps }));
+      result.asked++;
+    });
+    result.waiting = todo.length - result.asked;
+  } catch (e) {
+    result.note = 'AI advice skipped this time: ' + e.message;
+  }
+  return result;
+}
+
+function clearAiCache_() {
+  var props = PropertiesService.getScriptProperties();
+  Object.keys(props.getProperties()).forEach(function (key) {
+    if (key.indexOf(AI_CACHE_PREFIX_) === 0) props.deleteProperty(key);
+  });
 }
 
 // ===== Util.js =====

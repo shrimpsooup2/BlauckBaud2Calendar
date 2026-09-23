@@ -12,6 +12,9 @@ Puts your **tests, quizzes, essays, presentations, labs and major projects** fro
   delete it without touching your other events.
 - When a teacher moves, renames or deletes an assignment, your calendar follows. If you delete an
   event yourself, it stays deleted.
+- Optional **[study planner](#study-planner-optional)**: schedules study sessions before each
+  assessment, with more time for classes where your grades are lower. An AI (Ollama) reads each
+  assignment and names what to focus on in every session.
 
 It runs as a **Google Apps Script** in your own Google account. You don't install anything, it's
 free, and it keeps syncing every few hours even when your computer is off.
@@ -78,6 +81,90 @@ appears in the Google Calendar app on your phone. If it doesn't, turn it on in t
 That's it. If a sync ever fails (for example, the feed link expired), Google emails you.
 
 ---
+
+## Study planner (optional)
+
+Once your assessments are syncing, the tool can also plan **study sessions** on a separate
+**Study Plan** calendar:
+
+- Each upcoming assessment gets study time based on its kind: about 3 hours for a test, 45 minutes
+  for a quiz, 5 hours for a project, 4 for an essay, 2 for a presentation and 1½ for a lab.
+- **Your grades adjust it.** At your target grade (93% by default) an assessment gets the usual
+  time. Every 5 points below adds 25%, up to double. Every 5 points above takes 25% off, down to
+  60%. With 83% in AP Biology, a test there gets 4½ hours instead of 3.
+- **The AI reads the assignment.** Ollama estimates how big it is (a cumulative final gets more time
+  than a one-chapter quiz). It also breaks the work into steps, which become session titles like
+  "📚 Unit 3 Test (AP Biology): Membranes".
+- Sessions go into your study hours, around the events in your main calendar, and never add up to
+  more than 2 hours of study a day. Test sessions bunch up near the test (1, 2, 4 and 7 days
+  before). Project sessions spread out over the weeks before the due date.
+- The plan stays put between syncs. If you move a session, it stays where you put it. If you delete
+  one, it isn't added back.
+
+### Turn it on
+
+In `Settings.gs`, set `enabled: true` under `study`, and set `hours` to when you're free to study.
+Save, then run `preview` to see the plan, and `syncNow` to create it. From then on it updates with
+every automatic sync.
+
+### Add your Ollama API key
+
+1. Create a key at [ollama.com/settings/keys](https://ollama.com/settings/keys). The free plan
+   works; it has usage limits.
+2. In Apps Script, click the gear (**Project Settings**), scroll to **Script properties** and click
+   **Add script property**. Enter `OLLAMA_API_KEY` as the property and your key as the value, then
+   click **Save script properties**.
+3. Run `checkAi`. It lists the models your account can use and asks for a sample plan. If your
+   `ai.model` isn't in that list, pick one from it and set `ai.model` in `Settings.gs`.
+
+The key never goes in `Settings.gs`, so it can't end up anywhere you share by accident. Without a key
+the planner still works; sessions just get plain titles, like "📚 Study for Unit 3 Test". The AI is
+asked about each assessment once and the answer is remembered. It only asks again if the assignment
+changes.
+
+### Set up the "Send grades" bookmark
+
+Blackbaud only shows grades while you're signed in, so a bookmark reads them in your own browser:
+
+1. In Apps Script, click **Deploy → New deployment**. Click the gear next to "Select type" and
+   choose **Web app**. Set *Execute as* to **Me** and *Who has access* to **Anyone**, click
+   **Deploy**, and allow the permissions.
+2. Run `makeGradesBookmarklet`. The log shows a long line starting with `javascript:`. Copy the
+   whole line.
+3. Right-click your bookmarks bar and choose **Add page…** (Chrome, Edge) or **Add Bookmark…**
+   (Firefox). Name it "Send grades" and paste the line as the URL.
+4. Sign in to Blackbaud and click the bookmark. It shows your class grades and asks before sending
+   them. A new tab confirms "Saved your grades".
+
+Click it again whenever your grades change. Run `showGrades` to see what the planner is using.
+
+*Who has access* must be "Anyone" because the bookmark sends grades from your Blackbaud tab, which
+isn't signed in to Google. The web app can only do one thing, save grades, and it only accepts them
+along with the secret built into your bookmark. Keep the bookmark private. If it leaks, delete the
+`B2C_GRADES_TOKEN` script property and run `makeGradesBookmarklet` again for a new one.
+
+> **Heads-up:** Blackbaud doesn't document where its website gets grades from, so the bookmark
+> uses the same addresses the website does. It hasn't been tried on a real school yet. If it shows
+> an error, the message says which step failed; keep it, because it's what's needed to fix the
+> bookmark. Until then you can type grades into `study.grades` in `Settings.gs`.
+
+### Study settings
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `study.enabled` | `false` | Turns the planner on. |
+| `study.hours` | weekdays `'16:00-21:00'`, weekends `'10:00-18:00'` | When you can study. `mon` to `sun` set single days, and `''` means no studying that day. |
+| `study.sessionMinutes` | `45` | Length of one session. |
+| `study.maxMinutesPerDay` | `120` | Most study time in one day. |
+| `study.breakMinutes` | `15` | Free time kept between a session and anything else. |
+| `study.busyCalendars` | `[]` | Other calendars to plan around, by name. Your main calendar always counts. |
+| `study.targetGrade` | `93` | The grade at which an assessment gets its usual study time. |
+| `study.grades` | `{}` | Typed-in grades, like `{ 'AP Biology': 84 }`. These win over the bookmark's. |
+| `study.kinds` | see `Defaults.js` | For each kind: usual `minutes`, how many `daysAhead` to start, and `spacing` (`'spaced'` or `'even'`). |
+| `study.calendarName` | `'Study Plan'` | The calendar the sessions go in. |
+| `study.reminderMinutes` | `10` | Popup reminder before each session (`0` for none). |
+| `ai.model` | `'gpt-oss:20b'` | The Ollama model to use. `checkAi` lists the ones you can use. |
+| `ai.enabled` | `true` | `false` turns the AI off. |
 
 ## Customizing
 
@@ -147,6 +234,11 @@ Pick one in the Apps Script toolbar and click **Run**:
 | `restoreDeletedEvents` | Brings back synced events you deleted. |
 | `stopAutoSync` | Turns off the automatic sync. |
 | `removeSyncedEvents` | Deletes every event this tool created. Your own events are never touched. |
+| `makeGradesBookmarklet` | Prints your "Send grades" bookmark. |
+| `showGrades` | Shows the grades the study planner is using. |
+| `checkAi` | Checks your Ollama key and model, and shows a sample answer. |
+| `replanStudySessions` | Deletes upcoming study sessions (including ones you moved) and plans them again. |
+| `removeStudySessions` | Deletes every study session this tool made. |
 
 To uninstall: run `stopAutoSync` and `removeSyncedEvents`, delete the calendar in Google Calendar's
 settings, and delete the Apps Script project.
@@ -176,29 +268,28 @@ from Blackbaud and update `feedUrl`.
 **Using a school Google account?** Some schools block Apps Script or outside connections. If
 authorizing fails, use a personal Google account instead.
 
+**The log says "couldn't fit N session(s)".** There isn't enough free study time before that due
+date. Add study hours, raise `study.maxMinutesPerDay`, or lower that kind's `minutes`.
+
+**AI messages in the log.** "Rejected the API key": check that the script property is named exactly
+`OLLAMA_API_KEY`. "Doesn't have the model": run `checkAi` and choose a model from its list. "Usage
+limit was reached": the free plan's limit. In every case the planner carries on without the AI and
+catches up on a later sync.
+
 **Updating to a new version:** replace everything in `Code.gs` with the new
-[`dist/BlackbaudToCalendar.gs`](dist/BlackbaudToCalendar.gs). Keep your `Settings.gs`.
+[`dist/BlackbaudToCalendar.gs`](dist/BlackbaudToCalendar.gs). Keep your `Settings.gs`. If you use the
+grades bookmark, also click **Deploy → Manage deployments**, edit (pencil icon), choose
+**Version: New version** and click **Deploy**. The web app keeps its address, so your bookmark
+keeps working.
 
 ## Privacy
 
-Everything runs inside your own Google account. The script only talks to your Blackbaud feed and your
-Google Calendar. No other servers are involved, and nothing is shared. The feed link is never written
-to logs or error messages. The tool only edits or deletes events it created itself (they carry a
-hidden tag), so your other events are safe.
-
-## Coming next: AI study planner
-
-The plan is to add a second step that schedules study time automatically:
-
-1. Read the upcoming assessments: kind, class, due date and the teacher's description.
-2. Find free time in your main Google Calendar, within the study hours you choose.
-3. Ask Claude (Anthropic's AI) for a study plan that fits the assessment. For example: spaced review
-   sessions before a test, a short refresher before a quiz, and milestone work sessions for a project.
-4. Add the sessions (for example "📚 Study: Unit 3 Test, cell transport") to a separate
-   **Study Plan** calendar, and move them when due dates change.
-
-This needs an Anthropic API key, kept in the script's properties, plus your preferences: when you
-like to study, and the longest session and most study time per day.
+Everything runs inside your own Google account. The script talks to your Blackbaud feed, your Google
+Calendar and, if you turn on the study planner's AI, Ollama. Ollama gets each assessment's kind,
+class, title, due date and description, and nothing else: not your grades, your feed link or your
+calendar. Grades from the bookmark are stored in the script's properties, in your Google account.
+The feed link and the API key are never written to logs or error messages. The tool only edits or
+deletes events it created itself (they carry a hidden tag), so your other events are safe.
 
 ---
 
@@ -216,6 +307,10 @@ Script:
 | `Plan.js` | Builds the wanted events and works out create/update/remove (pure) |
 | `Classify.js` | Keyword classification (pure) |
 | `Ics.js` | iCalendar feed parser (pure) |
+| `Study.js` | Study planner: reads calendars, applies the plan, study functions you run |
+| `Planner.js` | Decides how much to study and when (pure) |
+| `Grades.js` | Grades: the bookmark, the web app (`doPost`) and matching grades to classes |
+| `Ollama.js` | Ollama Cloud client, prompt and answer parsing |
 | `Util.js` | Dates, time zones, hashing and HTML-to-text (pure) |
 
 ```sh

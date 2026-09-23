@@ -1,6 +1,7 @@
 // In-memory stand-ins for the Apps Script services the tool uses
 // (CalendarApp, UrlFetchApp, PropertiesService, ScriptApp, ...), so the whole
 // sync can run under Node.
+const crypto = require('crypto');
 
 function wallParts(instant, tz) {
   const parts = {};
@@ -50,7 +51,9 @@ class FakeEvent {
     this.color = '';
     this.reminders = [];
     this.deleted = false;
+    this.myStatus = 'OWNER';
   }
+  getMyStatus() { return this.myStatus; }
   getId() { return this.id; }
   getTitle() { return this.title; }
   setTitle(t) { this.calendar.env.writes++; this.title = t; return this; }
@@ -123,6 +126,12 @@ class FakeCalendar {
   getEvents(start, end) {
     return this.events.filter((ev) => ev.getStartTime() < end && ev.getEndTime() > start);
   }
+  // Test helper: a timed event from wall-clock 'YYYY-MM-DD', 'HH:MM' for `minutes`.
+  addTimedEvent(title, date, time, minutes) {
+    const [h, m] = time.split(':').map(Number);
+    const start = new Date(midnight(date, this.env.tz).getTime() + (h * 60 + m) * 60000);
+    return this.createEvent(title, start, new Date(start.getTime() + minutes * 60000), {});
+  }
 }
 
 function createGasEnvironment({ tz = 'America/New_York', feed = '', feedStatus = 200 } = {}) {
@@ -137,7 +146,12 @@ function createGasEnvironment({ tz = 'America/New_York', feed = '', feedStatus =
     properties: {},
     triggers: [],
     logs: [],
+    requests: [],
+    // (url, options) -> {code, body} for requests that aren't the feed.
+    handleRequest: null,
+    webAppUrl: null,
   };
+  env.defaultCalendar = new FakeCalendar(env, 'me@example.com');
 
   const globals = {
     console: {
@@ -152,6 +166,7 @@ function createGasEnvironment({ tz = 'America/New_York', feed = '', feedStatus =
         return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
       },
       sleep() {},
+      getUuid: () => crypto.randomUUID(),
     },
     Session: { getScriptTimeZone: () => env.tz },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
@@ -161,15 +176,31 @@ function createGasEnvironment({ tz = 'America/New_York', feed = '', feedStatus =
         setProperty: (k, v) => { env.properties[k] = String(v); },
         setProperties: (o) => { Object.keys(o).forEach((k) => (env.properties[k] = String(o[k]))); },
         deleteProperty: (k) => { delete env.properties[k]; },
+        getProperties: () => ({ ...env.properties }),
       }),
     },
     UrlFetchApp: {
-      fetch(url) {
+      fetch(url, options) {
+        if (env.handleRequest && !/podium\/feed|iCal/i.test(url)) {
+          env.requests.push({ url, options });
+          const res = env.handleRequest(url, options || {});
+          return { getResponseCode: () => res.code, getContentText: () => res.body };
+        }
         env.fetchedUrls.push(url);
         if (env.fetchError) throw new Error(env.fetchError(url));
         return {
           getResponseCode: () => env.feedStatus,
           getContentText: () => env.feed,
+        };
+      },
+    },
+    HtmlService: {
+      createHtmlOutput(html) {
+        return {
+          html,
+          title: '',
+          setTitle(t) { this.title = t; return this; },
+          getContent() { return html; },
         };
       },
     },
@@ -189,10 +220,14 @@ function createGasEnvironment({ tz = 'America/New_York', feed = '', feedStatus =
       },
       getProjectTriggers: () => env.triggers.slice(),
       deleteTrigger: (t) => { env.triggers = env.triggers.filter((x) => x !== t); },
+      getService: () => ({ getUrl: () => env.webAppUrl }),
     },
     CalendarApp: {
       getOwnedCalendarsByName: (name) => env.calendars.filter((c) => c.getName() === name),
       getCalendarById: (id) => env.calendars.find((c) => c.getId() === id) || null,
+      getDefaultCalendar: () => env.defaultCalendar,
+      getCalendarsByName: (name) => env.calendars.concat([env.defaultCalendar]).filter((c) => c.getName() === name),
+      GuestStatus: { NO: 'NO', YES: 'YES', MAYBE: 'MAYBE', INVITED: 'INVITED', OWNER: 'OWNER' },
       createCalendar(name, options) {
         const cal = new FakeCalendar(env, name, options);
         env.calendars.push(cal);

@@ -39,4 +39,33 @@ var SETTINGS = {
   // If your feed titles look like "AP Biology - 2: Unit 3 Test", this splits
   // them into class and assignment (run showFeedSample() to see your titles):
   // titlePattern: '^(?<course>.+?) - \\d+: (?<title>.+)$',
+
+  // STEP 2 (optional): the study planner. It puts study sessions on a
+  // "Study Plan" calendar, with more time for classes where your grade is lower.
+  // See "Study planner" in the README.
+  study: {
+    enabled: false,
+
+    // When you can study (24-hour clock). Add mon, tue, ... sun for single days,
+    // e.g. fri: '' for no studying on Fridays, or several ranges: '07:00-07:45, 16:00-21:00'.
+    hours: { weekdays: '16:00-21:00', weekends: '10:00-18:00' },
+    sessionMinutes: 45,
+    maxMinutesPerDay: 120,
+
+    // Other calendars to plan around (your main calendar always counts).
+    busyCalendars: [
+      // 'Soccer',
+    ],
+
+    // Grades you type here win over the ones the "Send grades" bookmark sends.
+    grades: {
+      // 'AP Biology': 84,
+    },
+  },
+
+  // AI for the study planner. Your Ollama API key does NOT go here: add it in
+  // Project Settings → Script properties as OLLAMA_API_KEY.
+  ai: {
+    model: 'gpt-oss:20b',
+  },
 };
