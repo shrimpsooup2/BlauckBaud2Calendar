@@ -1843,17 +1843,21 @@ function showGrades() {
 /** Prints the "Send grades" bookmark to add to your browser. */
 function makeGradesBookmarklet() {
   var settings = loadSettings_();
-  var code = gradesBookmarkletCode_(webAppUrl_(settings), gradesToken_());
+  var url = webAppUrl_(settings);
+  var code = gradesBookmarkletCode_(url, gradesToken_());
   console.log(
     [
-      'Your "Send grades" bookmark is ready. To add it:',
-      '1. Show your bookmarks bar (Ctrl+Shift+B, or Cmd+Shift+B on a Mac).',
-      '2. Right-click the bar and choose "Add page..." (Chrome/Edge) or "Add Bookmark..." (Firefox).',
-      '3. Name it "Send grades". For the URL, copy the whole next line (it starts with javascript:).',
+      'Your "Send grades" bookmark is ready.',
       '',
+      'Open this link in your browser (it works for the next ' + SETUP_LINK_MINUTES_ + ' minutes). It has a button',
+      'to drag onto your bookmarks bar, and a test bookmark in case nothing happens:',
+      url + '?setup=' + newSetupCode_(),
+      '',
+      'If that link says "No grades received", the web app is still running older code. Publish the new',
+      'code first (Deploy → Manage deployments → pencil icon → Version: New version → Deploy) and open it again.',
+      '',
+      'Or add the bookmark by hand: make a bookmark and paste the whole next line as its URL.',
       code,
-      '',
-      'Then open Blackbaud, sign in, and click the bookmark. Keep it private: it can update your grades.',
     ].join('\n')
   );
 }
@@ -2320,6 +2324,8 @@ function planStudy_(input) {
 
 var GRADES_PROPERTY_ = 'B2C_GRADES';
 var GRADES_TOKEN_PROPERTY_ = 'B2C_GRADES_TOKEN';
+var GRADES_SETUP_PROPERTY_ = 'B2C_GRADES_SETUP';
+var SETUP_LINK_MINUTES_ = 60;
 var MAX_GRADES_PAYLOAD_CHARS_ = 20000;
 
 /** Lower-case words only, for comparing names. */
@@ -2464,10 +2470,10 @@ function gradesResultPage_(result) {
 var GRADES_INBOX_HELP_ =
   '<p>This is the grades inbox for your study planner, but no grades came with this visit.</p>' +
   '<p>If you got here by clicking your "Send grades" bookmark, the bookmark is set to this page\'s address ' +
-  'instead of the bookmark code. In the script, run <b>makeGradesBookmarklet</b>, copy the whole line that ' +
-  'starts with <b>javascript:</b>, and paste it as the bookmark\'s URL (edit the bookmark to replace it).</p>' +
-  '<p>When the bookmark works, clicking it on Blackbaud first shows a box listing your grades and asking ' +
-  'whether to send them.</p>';
+  'instead of the bookmark code. In the script, run <b>makeGradesBookmarklet</b> and open the setup link it ' +
+  'prints: it has a button to drag onto your bookmarks bar.</p>' +
+  '<p>When the bookmark works, clicking it on Blackbaud shows a blue bar at the top of the page, then a box ' +
+  'listing your grades and asking whether to send them.</p>';
 
 /** Stores grades sent by the bookmark, or explains what went wrong. */
 function receiveGrades_(e) {
@@ -2487,14 +2493,84 @@ function receiveGrades_(e) {
   return gradesResultPage_(result);
 }
 
-/** Web app: the bookmark opens it with ?payload=... */
+/**
+ * Web app: the bookmark opens it with ?payload=...; the link printed by
+ * makeGradesBookmarklet() opens it with ?setup=... to install the bookmark.
+ */
 function doGet(e) {
-  return HtmlService.createHtmlOutput(receiveGrades_(e)).setTitle('Blackbaud → Calendar');
+  var params = (e && e.parameter) || {};
+  var html = params.setup !== undefined ? bookmarkSetupResponse_(params.setup) : receiveGrades_(e);
+  return HtmlService.createHtmlOutput(html).setTitle('Blackbaud → Calendar');
 }
 
 /** Web app: bookmarks made by older versions post their grades. */
 function doPost(e) {
   return HtmlService.createHtmlOutput(receiveGrades_(e)).setTitle('Blackbaud → Calendar');
+}
+
+/** A code for a setup link that works for SETUP_LINK_MINUTES_ (it shows the bookmark and its secret). */
+function newSetupCode_() {
+  var code = Utilities.getUuid().replace(/-/g, '');
+  PropertiesService.getScriptProperties().setProperty(
+    GRADES_SETUP_PROPERTY_,
+    JSON.stringify({ code: code, expires: Date.now() + SETUP_LINK_MINUTES_ * 60000 })
+  );
+  return code;
+}
+
+function isSetupCodeValid_(code) {
+  try {
+    var saved = JSON.parse(PropertiesService.getScriptProperties().getProperty(GRADES_SETUP_PROPERTY_) || 'null');
+    return Boolean(saved && code && saved.code === String(code) && Date.now() < saved.expires);
+  } catch (e) {
+    return false;
+  }
+}
+
+var TEST_BOOKMARKLET_ =
+  "javascript:void(alert('Bookmarks work on this page, so the Send grades bookmark can run here too.'))";
+
+/** The page that installs the bookmark: a button to drag, the code to copy, and a test bookmark. */
+function bookmarkSetupPage_(code) {
+  var noClick = ' onclick="alert(\'Drag this button onto your bookmarks bar instead of clicking it.\'); return false;"';
+  var button = 'display:inline-block;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600;';
+  return gradesPage_(
+    'Add the "Send grades" bookmark',
+    '<ol>' +
+      '<li>Show your bookmarks bar: press <b>Ctrl+Shift+B</b> (<b>Cmd+Shift+B</b> on a Mac).</li>' +
+      '<li><p>Drag this button onto the bookmarks bar:</p>' +
+      '<p><a href="' + escapeHtml_(code) + '"' + noClick + ' style="' + button + 'background:#1a73e8;color:#fff">Send grades</a></p>' +
+      '<p>If dragging doesn\'t work: right-click the bookmarks bar, choose <b>Add page…</b> (or <b>Add Bookmark…</b>), ' +
+      'name it <b>Send grades</b>, and paste everything in this box as the URL:</p>' +
+      '<textarea readonly rows="4" style="width:100%" onclick="this.select()">' + escapeHtml_(code) + '</textarea></li>' +
+      '<li>Go to your Blackbaud tab, sign in, and click <b>Send grades</b> on the bookmarks bar. A blue bar appears ' +
+      'at the top of the page, then a box listing your grades.</li>' +
+      '</ol>' +
+      '<h3>Nothing happens when you click it?</h3>' +
+      '<p>Make sure you click it while a Blackbaud page is open: bookmarks like this don\'t run on a new tab. ' +
+      'Then drag this test button onto the bookmarks bar as well and click it on Blackbaud:</p>' +
+      '<p><a href="' + escapeHtml_(TEST_BOOKMARKLET_) + '"' + noClick + ' style="' + button + 'background:#e8eaed;color:#202124">Test bookmark</a></p>' +
+      '<ul>' +
+      '<li>If it says "Bookmarks work on this page", delete your old Send grades bookmark and add it again from this page.</li>' +
+      '<li>If nothing happens, your school\'s Blackbaud site blocks bookmarks. Type your grades into ' +
+      '<b>study.grades</b> in Settings.gs instead.</li>' +
+      '</ul>' +
+      '<p><small>This page works for ' + SETUP_LINK_MINUTES_ + ' minutes. Keep the bookmark private: it can update your grades.</small></p>'
+  );
+}
+
+function bookmarkSetupResponse_(code) {
+  if (!isSetupCodeValid_(code)) {
+    return gradesPage_(
+      'This setup link has expired',
+      '<p>Run <b>makeGradesBookmarklet</b> in the script again for a new link.</p>'
+    );
+  }
+  try {
+    return bookmarkSetupPage_(gradesBookmarkletCode_(webAppUrl_(loadSettings_()), gradesToken_()));
+  } catch (err) {
+    return gradesPage_('Something in the script needs fixing first', '<p>' + escapeHtml_(err.message) + '</p>');
+  }
 }
 
 /** The secret the bookmark includes so only it can update your grades. */
@@ -2542,6 +2618,13 @@ function webAppUrl_(settings) {
  */
 async function gradesGrabber_(config) {
   var title = 'Blackbaud to Calendar';
+  var banner = document.createElement('div');
+  banner.textContent = title + ': reading your grades...';
+  Object.assign(banner.style, {
+    position: 'fixed', top: '0', left: '0', right: '0', zIndex: '2147483647', padding: '10px 16px',
+    background: '#1a73e8', color: '#fff', font: '15px/1.4 system-ui, sans-serif', textAlign: 'center',
+  });
+  (document.body || document.documentElement).appendChild(banner);
   async function getJson(path) {
     var where = path.split('?')[0];
     var res = await fetch(location.origin + path, { credentials: 'include', headers: { Accept: 'application/json' } });
@@ -2615,6 +2698,8 @@ async function gradesGrabber_(config) {
       title + ": couldn't read your grades.\n\n" + e.message +
         '\n\nMake sure you are signed in to Blackbaud in this tab. If it keeps happening, send this message to whoever set up the tool.'
     );
+  } finally {
+    banner.remove();
   }
 }
 

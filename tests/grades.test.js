@@ -107,7 +107,7 @@ test('a visit without grades explains how to fix the bookmark', () => {
     const html = page.getContent();
     assert.match(html, /No grades received/);
     assert.match(html, /no grades came with this visit/);
-    assert.match(html, /run <b>makeGradesBookmarklet<\/b>, copy the whole line that starts with <b>javascript:<\/b>/);
+    assert.match(html, /run <b>makeGradesBookmarklet<\/b> and open the setup link it prints/);
   }
   assert.equal(env.properties.B2C_GRADES, undefined);
 });
@@ -127,6 +127,48 @@ test('the web app URL comes from Settings or the deployment', () => {
   assert.equal(gas.webAppUrl_(gas.loadSettings_()), WEB_APP);
   gas.SETTINGS.study = { webAppUrl: 'https://script.google.com/a/macros/school.org/s/xyz/exec' };
   assert.equal(gas.webAppUrl_(gas.loadSettings_()), 'https://script.google.com/a/macros/school.org/s/xyz/exec');
+});
+
+function unescapeHtml(s) {
+  return s.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+test('the setup link shows a bookmark button to drag, the code to copy, and a test bookmark', () => {
+  const { gas, env } = setUp({ study: { webAppUrl: WEB_APP } });
+  gas.makeGradesBookmarklet();
+  const code = JSON.parse(env.properties.B2C_GRADES_SETUP).code;
+  const html = gas.doGet({ parameter: { setup: code } }).getContent();
+  assert.match(html, /Add the &quot;Send grades&quot; bookmark/);
+  const bookmark = gas.gradesBookmarkletCode_(WEB_APP, env.properties.B2C_GRADES_TOKEN);
+  const hrefs = [...html.matchAll(/<a href="([^"]*)"/g)].map((m) => unescapeHtml(m[1]));
+  assert.deepEqual(hrefs, [bookmark, "javascript:void(alert('Bookmarks work on this page, so the Send grades bookmark can run here too.'))"]);
+  const textarea = /<textarea[^>]*>([^<]*)<\/textarea>/.exec(html)[1];
+  assert.equal(unescapeHtml(textarea), bookmark);
+  assert.match(html, /Drag this button onto your bookmarks bar instead of clicking it/);
+  assert.match(html, /your school's Blackbaud site blocks bookmarks/);
+  // Visiting it doesn't save anything.
+  assert.equal(env.properties.B2C_GRADES, undefined);
+});
+
+test('setup links only work with the latest code, for an hour', () => {
+  const { gas, env } = setUp({ study: { webAppUrl: WEB_APP } });
+  assert.match(gas.doGet({ parameter: { setup: 'anything' } }).getContent(), /This setup link has expired/);
+  gas.makeGradesBookmarklet();
+  const saved = JSON.parse(env.properties.B2C_GRADES_SETUP);
+  assert.match(gas.doGet({ parameter: { setup: 'wrong' } }).getContent(), /This setup link has expired/);
+  assert.match(gas.doGet({ parameter: { setup: '' } }).getContent(), /This setup link has expired/);
+  env.properties.B2C_GRADES_SETUP = JSON.stringify({ code: saved.code, expires: Date.now() - 1 });
+  assert.match(gas.doGet({ parameter: { setup: saved.code } }).getContent(), /This setup link has expired/);
+});
+
+test('the setup page says what to fix when the settings are incomplete', () => {
+  const { gas, env } = setUp({ study: { webAppUrl: WEB_APP } });
+  gas.makeGradesBookmarklet();
+  const code = JSON.parse(env.properties.B2C_GRADES_SETUP).code;
+  gas.SETTINGS.study = {};
+  const html = gas.doGet({ parameter: { setup: code } }).getContent();
+  assert.match(html, /Something in the script needs fixing first/);
+  assert.match(html, /doesn&#39;t know its web app address yet/);
 });
 
 // --- The bookmark, run in a pretend browser -----------------------------------
@@ -153,15 +195,22 @@ const BLACKBAUD_API = {
 function runBookmarklet(code, { api = BLACKBAUD_API, status = {}, answers = [] } = {}) {
   assert.ok(code.startsWith('javascript:'));
   const source = decodeURIComponent(code.slice('javascript:'.length));
-  const calls = { fetched: [], alerts: [], confirms: [], submitted: [] };
+  const calls = { fetched: [], alerts: [], confirms: [], submitted: [], banners: [] };
   function element(tag) {
-    return {
+    const el = {
       tag,
+      style: {},
+      textContent: '',
       children: [],
-      appendChild(child) { this.children.push(child); },
+      removed: false,
+      appendChild(child) {
+        this.children.push(child);
+        if (child.tag === 'div') calls.banners.push({ text: child.textContent, shownFirst: calls.fetched.length === 0, el: child });
+      },
       submit() { calls.submitted.push({ method: this.method, action: this.action, target: this.target, fields: this.children.map((c) => [c.name, c.value]) }); },
-      remove() {},
+      remove() { this.removed = true; },
     };
+    return el;
   }
   const browser = {
     location: { origin: 'https://myschool.myschoolapp.com', hostname: 'myschool.myschoolapp.com' },
@@ -183,10 +232,14 @@ function runBookmarklet(code, { api = BLACKBAUD_API, status = {}, answers = [] }
   return new Promise((resolve) => setTimeout(() => resolve(calls), 20));
 }
 
-test('makeGradesBookmarklet() prints a bookmark with the web app URL and secret', () => {
+test('makeGradesBookmarklet() prints a setup link and the bookmark with the web app URL and secret', () => {
   const { gas, env } = setUp({ study: { webAppUrl: ` ${WEB_APP} ` } });
   gas.makeGradesBookmarklet();
-  const code = env.logs.join('\n').split('\n').find((l) => l.startsWith('javascript:'));
+  const lines = env.logs.join('\n').split('\n');
+  const setupLink = lines.find((l) => l.startsWith(WEB_APP + '?setup='));
+  assert.ok(setupLink, lines.join('\n'));
+  assert.equal(setupLink, `${WEB_APP}?setup=${JSON.parse(env.properties.B2C_GRADES_SETUP).code}`);
+  const code = lines.find((l) => l.startsWith('javascript:'));
   assert.ok(code);
   const source = decodeURIComponent(code.slice(11));
   assert.match(source, /^void \(async function gradesGrabber_/);
@@ -198,6 +251,12 @@ test('the bookmark reads grades from Blackbaud and sends them to the web app', a
   const { gas } = setUp();
   const calls = await runBookmarklet(gas.gradesBookmarkletCode_(WEB_APP, 'secret'));
   assert.deepEqual(calls.alerts, []);
+  // A bar shows right away, so you can tell the bookmark started; it goes away at the end.
+  assert.equal(calls.banners.length, 1);
+  assert.equal(calls.banners[0].text, 'Blackbaud to Calendar: reading your grades...');
+  assert.ok(calls.banners[0].shownFirst);
+  assert.equal(calls.banners[0].el.style.position, 'fixed');
+  assert.ok(calls.banners[0].el.removed);
   const year = encodeURIComponent(schoolYear());
   assert.deepEqual(
     calls.fetched.map((f) => f.url),
@@ -239,6 +298,7 @@ test('the bookmark explains which step failed', async () => {
   const signedOut = await runBookmarklet(gas.gradesBookmarkletCode_(WEB_APP, 'secret'), { status: { '/api/webapp/context': 401 } });
   assert.equal(signedOut.submitted.length, 0);
   assert.match(signedOut.alerts[0], /couldn't read your grades\.\n\n\/api\/webapp\/context answered HTTP 401/);
+  assert.ok(signedOut.banners[0].el.removed, 'the bar goes away after an error too');
 
   const noGrades = await runBookmarklet(gas.gradesBookmarkletCode_(WEB_APP, 'secret'), {
     api: { ...BLACKBAUD_API, '/api/datadirect/ParentStudentUserAcademicGroupsGet': [{ sectionidentifier: 'Art', cumgrade: '' }] },

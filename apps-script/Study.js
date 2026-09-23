@@ -378,17 +378,21 @@ function showGrades() {
 /** Prints the "Send grades" bookmark to add to your browser. */
 function makeGradesBookmarklet() {
   var settings = loadSettings_();
-  var code = gradesBookmarkletCode_(webAppUrl_(settings), gradesToken_());
+  var url = webAppUrl_(settings);
+  var code = gradesBookmarkletCode_(url, gradesToken_());
   console.log(
     [
-      'Your "Send grades" bookmark is ready. To add it:',
-      '1. Show your bookmarks bar (Ctrl+Shift+B, or Cmd+Shift+B on a Mac).',
-      '2. Right-click the bar and choose "Add page..." (Chrome/Edge) or "Add Bookmark..." (Firefox).',
-      '3. Name it "Send grades". For the URL, copy the whole next line (it starts with javascript:).',
+      'Your "Send grades" bookmark is ready.',
       '',
+      'Open this link in your browser (it works for the next ' + SETUP_LINK_MINUTES_ + ' minutes). It has a button',
+      'to drag onto your bookmarks bar, and a test bookmark in case nothing happens:',
+      url + '?setup=' + newSetupCode_(),
+      '',
+      'If that link says "No grades received", the web app is still running older code. Publish the new',
+      'code first (Deploy → Manage deployments → pencil icon → Version: New version → Deploy) and open it again.',
+      '',
+      'Or add the bookmark by hand: make a bookmark and paste the whole next line as its URL.',
       code,
-      '',
-      'Then open Blackbaud, sign in, and click the bookmark. Keep it private: it can update your grades.',
     ].join('\n')
   );
 }

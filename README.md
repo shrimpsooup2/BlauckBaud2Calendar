@@ -135,12 +135,15 @@ Blackbaud only shows grades while you're signed in, so a bookmark reads them in 
    **Deploy → Manage deployments**). In `Settings.gs`, paste it between the quotes of `webAppUrl`
    in the `study` section, like `webAppUrl: 'https://script.google.com/macros/s/…/exec',`, and
    save.
-3. Run `makeGradesBookmarklet`. The log shows a long line starting with `javascript:`. Copy the
-   whole line.
-4. Right-click your bookmarks bar and choose **Add page…** (Chrome, Edge) or **Add Bookmark…**
-   (Firefox). Name it "Send grades" and paste the line as the URL.
-5. Sign in to Blackbaud and click the bookmark. It shows your class grades and asks before sending
-   them. A new tab confirms "Saved your grades".
+3. Run `makeGradesBookmarklet` and open the setup link it prints (it works for an hour).
+4. Drag the **Send grades** button on that page onto your bookmarks bar (press Ctrl+Shift+B to show
+   the bar).
+5. Sign in to Blackbaud and click the bookmark on a Blackbaud page. A blue bar appears at the top,
+   then a box listing your grades asks before sending them. A new tab confirms "Saved your grades".
+
+**Nothing happens when you click it?** The setup page also has a **Test bookmark**. Drag it to the
+bar and click it on Blackbaud. If it doesn't say "Bookmarks work on this page", your school's
+Blackbaud blocks bookmarks, and you'll need to type your grades into `study.grades` instead.
 
 Click it again whenever your grades change. Run `showGrades` to see what the planner is using.
 
