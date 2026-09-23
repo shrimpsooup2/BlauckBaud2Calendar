@@ -2,9 +2,12 @@
  * Class grades for the study planner.
  *
  * Grades arrive from the "Send grades" bookmark: you click it while signed in
- * to Blackbaud, it reads your class averages there and posts them to this
- * script's web app (doPost), which stores them in Script Properties. Grades
- * typed into Settings.gs (study.grades) take priority over sent ones.
+ * to Blackbaud, it reads your class averages there and opens this script's
+ * web app with them in the address (doGet), which stores them in Script
+ * Properties. The address is used rather than a form post because Google
+ * sometimes redirects web app requests (for example when you're signed in
+ * to several accounts), and a redirected post loses its data. Grades typed
+ * into Settings.gs (study.grades) take priority over sent ones.
  *
  * Grades stay in your Google account; they are never sent to the AI.
  */
@@ -152,11 +155,20 @@ function gradesResultPage_(result) {
   );
 }
 
-/** Web app endpoint the bookmark posts to. */
-function doPost(e) {
+var GRADES_INBOX_HELP_ =
+  '<p>This is the grades inbox for your study planner, but no grades came with this visit.</p>' +
+  '<p>If you got here by clicking your "Send grades" bookmark, the bookmark is set to this page\'s address ' +
+  'instead of the bookmark code. In the script, run <b>makeGradesBookmarklet</b>, copy the whole line that ' +
+  'starts with <b>javascript:</b>, and paste it as the bookmark\'s URL (edit the bookmark to replace it).</p>' +
+  '<p>When the bookmark works, clicking it on Blackbaud first shows a box listing your grades and asking ' +
+  'whether to send them.</p>';
+
+/** Stores grades sent by the bookmark, or explains what went wrong. */
+function receiveGrades_(e) {
+  var raw = (e && e.parameter && e.parameter.payload) || (e && e.postData && e.postData.contents) || '';
+  if (!raw) return gradesPage_('No grades received', GRADES_INBOX_HELP_);
   var result;
   try {
-    var raw = (e && e.parameter && e.parameter.payload) || (e && e.postData && e.postData.contents) || '';
     var data = validateGradesPayload_(raw, PropertiesService.getScriptProperties().getProperty(GRADES_TOKEN_PROPERTY_));
     PropertiesService.getScriptProperties().setProperty(
       GRADES_PROPERTY_,
@@ -166,16 +178,17 @@ function doPost(e) {
   } catch (err) {
     result = { ok: false, message: err.message };
   }
-  return HtmlService.createHtmlOutput(gradesResultPage_(result)).setTitle('Blackbaud → Calendar');
+  return gradesResultPage_(result);
 }
 
-function doGet() {
-  return HtmlService.createHtmlOutput(
-    gradesPage_(
-      'Blackbaud → Calendar',
-      '<p>This is the grades inbox for your study planner. Use your "Send grades" bookmark on Blackbaud to send grades here.</p>'
-    )
-  ).setTitle('Blackbaud → Calendar');
+/** Web app: the bookmark opens it with ?payload=... */
+function doGet(e) {
+  return HtmlService.createHtmlOutput(receiveGrades_(e)).setTitle('Blackbaud → Calendar');
+}
+
+/** Web app: bookmarks made by older versions post their grades. */
+function doPost(e) {
+  return HtmlService.createHtmlOutput(receiveGrades_(e)).setTitle('Blackbaud → Calendar');
 }
 
 /** The secret the bookmark includes so only it can update your grades. */
@@ -205,7 +218,7 @@ function webAppUrl_(settings) {
  * Runs in your browser as a bookmark on your Blackbaud site, not in Apps
  * Script. While you're signed in it can read the same data the Blackbaud
  * pages show you: it looks up your current classes and their averages, asks
- * you to confirm, and posts them to this script's web app in a new tab.
+ * you to confirm, and sends them to this script's web app in a new tab.
  *
  * Blackbaud's data addresses aren't documented, so each step reports clearly
  * where it failed. No // comments in here: it gets squeezed into a bookmark.
@@ -269,7 +282,7 @@ async function gradesGrabber_(config) {
     var list = classes.map(function (c) { return '- ' + c.name + ': ' + c.grade + '%'; }).join('\n');
     if (!confirm(title + ': send these grades to your study planner?\n\n' + list)) return;
     var form = document.createElement('form');
-    form.method = 'POST';
+    form.method = 'GET';
     form.action = config.url;
     form.target = '_blank';
     var input = document.createElement('input');

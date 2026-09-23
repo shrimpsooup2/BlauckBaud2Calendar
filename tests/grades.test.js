@@ -74,7 +74,7 @@ test('validateGradesPayload_ only accepts sensible grades with the right secret'
   assert.deepEqual(result, { classes: [{ name: 'AP Biology - 2', grade: 84.5 }, { name: 'Chemistry', grade: 77 }] });
 });
 
-test('doPost saves grades sent with the right secret and shows a confirmation', () => {
+test('doPost (used by bookmarks from older versions) saves grades sent with the right secret', () => {
   const { gas, env } = setUp();
   const token = gas.gradesToken_();
   assert.equal(gas.gradesToken_(), token);
@@ -90,8 +90,26 @@ test('doPost saves grades sent with the right secret and shows a confirmation', 
   const rejected = gas.doPost({ parameter: { payload: JSON.stringify({ token: 'guess', classes: [{ name: 'X', grade: 1 }] }) } });
   assert.match(rejected.getContent(), /Grades not saved/);
   assert.deepEqual(JSON.parse(env.properties.B2C_GRADES).classes, [{ name: 'AP Bio <b>', grade: 84 }]);
+});
 
-  assert.match(gas.doGet().getContent(), /grades inbox/);
+test('doGet saves grades that arrive in the address, the way the bookmark sends them', () => {
+  const { gas, env } = setUp();
+  const token = gas.gradesToken_();
+  const page = gas.doGet({ parameter: { payload: JSON.stringify({ token, classes: [{ name: 'Geometry - 3', grade: 95 }] }) } });
+  assert.match(page.getContent(), /Saved your grades/);
+  assert.deepEqual(JSON.parse(env.properties.B2C_GRADES).classes, [{ name: 'Geometry - 3', grade: 95 }]);
+  assert.equal(page.title, 'Blackbaud → Calendar');
+});
+
+test('a visit without grades explains how to fix the bookmark', () => {
+  const { gas, env } = setUp();
+  for (const page of [gas.doGet(), gas.doGet({ parameter: {} }), gas.doPost({ parameter: {} })]) {
+    const html = page.getContent();
+    assert.match(html, /No grades received/);
+    assert.match(html, /no grades came with this visit/);
+    assert.match(html, /run <b>makeGradesBookmarklet<\/b>, copy the whole line that starts with <b>javascript:<\/b>/);
+  }
+  assert.equal(env.properties.B2C_GRADES, undefined);
 });
 
 test('the web app URL comes from Settings or the deployment', () => {
@@ -171,7 +189,7 @@ test('makeGradesBookmarklet() prints a bookmark with the web app URL and secret'
   assert.ok(source.includes(env.properties.B2C_GRADES_TOKEN));
 });
 
-test('the bookmark reads grades from Blackbaud and posts them to the web app', async () => {
+test('the bookmark reads grades from Blackbaud and sends them to the web app', async () => {
   const { gas } = setUp();
   const calls = await runBookmarklet(gas.gradesBookmarkletCode_(WEB_APP, 'secret'));
   assert.deepEqual(calls.alerts, []);
@@ -188,7 +206,7 @@ test('the bookmark reads grades from Blackbaud and posts them to the web app', a
   assert.match(calls.confirms[0], /AP Biology - 2 \(B\): 84\.5%\n- Geometry - 3: 95%$/);
   assert.equal(calls.submitted.length, 1);
   const form = calls.submitted[0];
-  assert.deepEqual([form.method, form.action, form.target], ['POST', WEB_APP, '_blank']);
+  assert.deepEqual([form.method, form.action, form.target], ['GET', WEB_APP, '_blank']);
   assert.equal(form.fields[0][0], 'payload');
   assert.deepEqual(JSON.parse(form.fields[0][1]), {
     token: 'secret',
@@ -201,7 +219,7 @@ test('what the bookmark sends is accepted by the web app', async () => {
   const token = gas.gradesToken_();
   const calls = await runBookmarklet(gas.gradesBookmarkletCode_(WEB_APP, token));
   const payload = calls.submitted[0].fields[0][1];
-  assert.match(gas.doPost({ parameter: { payload } }).getContent(), /Saved your grades/);
+  assert.match(gas.doGet({ parameter: { payload } }).getContent(), /Saved your grades/);
   assert.equal(JSON.parse(env.properties.B2C_GRADES).classes.length, 2);
 });
 

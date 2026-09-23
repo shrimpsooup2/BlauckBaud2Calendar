@@ -140,6 +140,10 @@ Blackbaud only shows grades while you're signed in, so a bookmark reads them in 
 
 Click it again whenever your grades change. Run `showGrades` to see what the planner is using.
 
+If the new tab says **"No grades received"**, the bookmark's URL is the web app's address instead
+of the `javascript:` line. Edit the bookmark and paste the `javascript:` line as its URL. A working
+bookmark always shows the grades box on Blackbaud first.
+
 *Who has access* must be "Anyone" because the bookmark sends grades from your Blackbaud tab, which
 isn't signed in to Google. The web app can only do one thing, save grades, and it only accepts them
 along with the secret built into your bookmark. Keep the bookmark private. If it leaks, delete the
@@ -287,9 +291,10 @@ In every case the planner carries on without the AI and catches up on a later sy
 
 **Updating to a new version:** replace everything in `Code.gs` with the new
 [`dist/BlackbaudToCalendar.gs`](dist/BlackbaudToCalendar.gs). Keep your `Settings.gs`. If you use the
-grades bookmark, also click **Deploy → Manage deployments**, edit (pencil icon), choose
-**Version: New version** and click **Deploy**. The web app keeps its address, so your bookmark
-keeps working.
+grades bookmark, the web app keeps running the old code until you publish the new one: click
+**Deploy → Manage deployments**, edit (pencil icon), choose **Version: New version** and click
+**Deploy**. The web app keeps its address. Then run `makeGradesBookmarklet` again and replace the
+bookmark, in case the bookmark code changed too.
 
 ## Privacy
 
