@@ -17,8 +17,10 @@ var SETTINGS = {
   lookbackDays: 7,
   lookaheadDays: 120,
 
-  // How often to check Blackbaud: 1, 2, 4, 6, 8 or 12 hours.
+  // How often to check Blackbaud: every 1, 2, 4, 6, 8 or 12 hours, or every few
+  // days with syncEveryDays (it wins if set). Run setup() again after changing it.
   syncEveryHours: 4,
+  // syncEveryDays: 3,
 
   // Popup reminders go off at this time of day (24-hour clock).
   reminderTime: '16:00',
@@ -67,9 +69,12 @@ var SETTINGS = {
     webAppUrl: '',
   },
 
-  // AI for the study planner. Your Ollama API key does NOT go here: add it in
+  // The AI (Ollama). Your API key does NOT go here: add it in
   // Project Settings → Script properties as OLLAMA_API_KEY.
   ai: {
     model: 'gpt-oss:20b',
+    // Let the AI decide which Blackbaud items go on your calendar
+    // (false = only the keyword rules decide).
+    chooseItems: true,
   },
 };

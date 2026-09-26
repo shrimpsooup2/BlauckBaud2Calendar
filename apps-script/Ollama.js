@@ -228,33 +228,38 @@ function ollamaFetch_(ai, apiKey, path, payload) {
     );
   }
   if (code === 429) {
-    throw new Error("Ollama's usage limit was reached (HTTP 429). Study sessions get plain titles until it resets.");
+    throw new Error("Ollama's usage limit was reached (HTTP 429). The AI is skipped until it resets.");
   }
   throw new Error('Ollama answered HTTP ' + code + (detail ? ': ' + detail : '') + '.');
 }
 
 /**
- * Asks the AI about a batch: [{input}] -> {index: {effort, steps}} keyed
- * like 'a1', 'a2', ... Every exchange is saved for showAiTranscript().
+ * One chat with the AI that should answer JSON matching `schema`. Returns
+ * the answer's text. Every exchange is saved for showAiTranscript(), with
+ * `purpose` saying what it was for.
  */
-function askOllamaForAdvice_(batch, ai, apiKey) {
-  var items = batch.map(function (t, i) {
-    return Object.assign({ id: 'a' + (i + 1) }, t.input);
-  });
-  var messages = buildStudyPrompt_(items);
-  var transcript = { at: new Date().toISOString(), model: ai.model, messages: messages, thinking: '', reply: '', error: '' };
+function ollamaChat_(ai, apiKey, messages, schema, purpose) {
+  var transcript = {
+    at: new Date().toISOString(),
+    model: ai.model,
+    purpose: purpose,
+    messages: messages,
+    thinking: '',
+    reply: '',
+    error: '',
+  };
   try {
     var body = ollamaFetch_(ai, apiKey, '/api/chat', {
       model: ai.model,
       messages: messages,
       stream: false,
-      format: STUDY_ADVICE_SCHEMA_,
+      format: schema,
       options: { temperature: 0.2 },
     });
     var message = (body && body.message) || {};
     transcript.reply = String(message.content || '');
     transcript.thinking = String(message.thinking || '');
-    return parseStudyReply_(message.content);
+    return transcript.reply;
   } catch (e) {
     transcript.error = e.message;
     throw e;
@@ -262,9 +267,18 @@ function askOllamaForAdvice_(batch, ai, apiKey) {
     try {
       saveTranscript_(transcript);
     } catch (ignored) {
-      // Never let the transcript get in the way of the plan.
+      // Never let the transcript get in the way of the sync.
     }
   }
+}
+
+/** Asks the AI about a batch: [{input}] -> {index: {effort, steps}} keyed like 'a1', 'a2', ... */
+function askOllamaForAdvice_(batch, ai, apiKey) {
+  var items = batch.map(function (t, i) {
+    return Object.assign({ id: 'a' + (i + 1) }, t.input);
+  });
+  var reply = ollamaChat_(ai, apiKey, buildStudyPrompt_(items), STUDY_ADVICE_SCHEMA_, 'Planning study sessions');
+  return parseStudyReply_(reply);
 }
 
 /** Squeezes a transcript into one script property (9 KB max). */
@@ -275,6 +289,7 @@ function fitTranscript_(t) {
   var entry = {
     at: t.at,
     model: t.model,
+    purpose: t.purpose || '',
     system: truncate_(system, 600),
     request: truncate_(request, 3500),
     thinking: truncate_(t.thinking || '', 1500),

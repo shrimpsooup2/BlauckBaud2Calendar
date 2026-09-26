@@ -464,6 +464,7 @@ function showAiTranscript() {
     var lines = [
       '===== Conversation ' + (i + 1) + ' of ' + transcripts.length + (i === 0 ? ' (newest)' : '') + ' =====',
       'When: ' + formatHumanDate_(when.date) + ' at ' + formatHumanTime_(when.time) + '    Model: ' + t.model,
+      'About: ' + (t.purpose || 'Planning study sessions'),
       '',
       '--- Instructions the AI always gets ---',
       t.system,

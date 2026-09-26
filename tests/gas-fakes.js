@@ -210,6 +210,8 @@ function createGasEnvironment({ tz = 'America/New_York', feed = '', feedStatus =
         const builder = {
           timeBased() { return builder; },
           everyHours(h) { trigger.everyHours = h; return builder; },
+          everyDays(d) { trigger.everyDays = d; return builder; },
+          atHour(h) { trigger.atHour = h; return builder; },
           create() {
             const t = { getHandlerFunction: () => handler, spec: trigger };
             env.triggers.push(t);

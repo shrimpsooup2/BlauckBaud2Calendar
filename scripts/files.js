@@ -6,6 +6,7 @@ module.exports = [
   'Calendar.js',
   'Plan.js',
   'Classify.js',
+  'Choose.js',
   'Ics.js',
   'Study.js',
   'Planner.js',

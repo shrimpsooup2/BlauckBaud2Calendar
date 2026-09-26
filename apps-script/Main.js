@@ -24,6 +24,8 @@ var VALID_SYNC_HOURS_ = [1, 2, 4, 6, 8, 12];
 var FEED_URL_PROPERTY_ = 'BLACKBAUD_FEED_URL';
 // Apps Script stops a run after 6 minutes; stop starting new work well before.
 var MAX_RUN_MILLIS_ = 4.5 * 60 * 1000;
+// Leave most of the run for calendar changes: no new AI requests to choose items after this.
+var AI_CHOOSING_MILLIS_ = 2.5 * 60 * 1000;
 
 function setup() {
   var settings = loadSettings_();
@@ -32,11 +34,8 @@ function setup() {
     console.warn("Setup didn't finish (see the message above), so automatic sync is not on yet.");
     return;
   }
-  installTrigger_(settings.syncEveryHours);
-  console.log(
-    'All set! Your calendar "' + settings.calendarName + '" will update automatically every ' +
-      settings.syncEveryHours + ' hour(s).'
-  );
+  installTrigger_(settings);
+  console.log('All set! Your calendar "' + settings.calendarName + '" will update automatically ' + syncIntervalText_(settings) + '.');
 }
 
 function syncNow() {
@@ -152,7 +151,10 @@ function settingsProblems_(s) {
     problems.push('feedUrl should start with webcal:// or https://');
   }
   if (!String(s.calendarName || '').trim()) problems.push('calendarName must not be empty.');
-  if (VALID_SYNC_HOURS_.indexOf(Number(s.syncEveryHours)) === -1) {
+  var days = s.syncEveryDays;
+  if (days !== undefined && days !== null && days !== 0 && days !== '' && !(Number(days) >= 1 && Number(days) <= 30 && Number(days) % 1 === 0)) {
+    problems.push('syncEveryDays must be a whole number of days from 1 to 30 (or 0 to use syncEveryHours).');
+  } else if (!Number(days) && VALID_SYNC_HOURS_.indexOf(Number(s.syncEveryHours)) === -1) {
     problems.push('syncEveryHours must be one of ' + VALID_SYNC_HOURS_.join(', ') + '.');
   }
   ['lookbackDays', 'lookaheadDays'].forEach(function (key) {
@@ -268,6 +270,8 @@ function studySettingsProblems_(s, problems) {
   if (!/^https?:\/\/\S+$/.test(String(ai.baseUrl || ''))) problems.push('ai.baseUrl must be a web address like https://ollama.com.');
   if (!String(ai.model || '').trim()) problems.push("ai.model must name a model, like 'gpt-oss:20b'.");
   if (!numberBetween_(ai.maxPerRun, 1, 20)) problems.push('ai.maxPerRun must be a number from 1 to 20.');
+  if (!numberBetween_(ai.maxItemsPerRun, 1, 500)) problems.push('ai.maxItemsPerRun must be a number from 1 to 500.');
+  if (typeof ai.chooseItems !== 'boolean') problems.push('ai.chooseItems must be true or false.');
 }
 
 function timeZoneOf_(settings) {
@@ -336,6 +340,11 @@ function runSync_(opts) {
       return null;
     }
     var decisions = classifyItems_(items, settings, win);
+    if (settings.ai.enabled && settings.ai.chooseItems) {
+      var aiChoice = getAiChoices_(decisions, settings, kindLabels_(settings), started + AI_CHOOSING_MILLIS_);
+      decisions = applyAiChoices_(decisions, aiChoice.choices, settings);
+      logAiChoices_(aiChoice);
+    }
     var desired = desiredEvents_(decisions, settings);
     logDecisions_(decisions, items.length, win, settings, opts.dryRun);
 
@@ -393,6 +402,23 @@ function runStudySafely_(settings, syncPlan, tz, opts, errors) {
     errors.push('Study plan: ' + e.message);
     return null;
   }
+}
+
+function logAiChoices_(r) {
+  var lines = [];
+  var judged = Object.keys(r.choices).length;
+  if (judged) {
+    lines.push(
+      'The AI chose for ' + judged + ' item(s)' + (r.asked ? ' (' + r.asked + ' new this time)' : '') +
+        '. Run showAiTranscript() to read its reasons.'
+    );
+  }
+  if (r.repeats) lines.push(r.repeats + ' repeating item(s), like class meetings, were left to the keyword rules.');
+  if (r.waiting && !r.note) {
+    lines.push(r.waiting + ' item(s) wait for the AI until the next sync (run syncNow() again to do them now).');
+  }
+  if (r.note) lines.push(r.note);
+  if (lines.length) console.log(lines.join('\n'));
 }
 
 function logDecisions_(decisions, feedCount, win, settings, verbose) {

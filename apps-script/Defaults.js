@@ -19,8 +19,10 @@ var DEFAULTS_ = {
   lookbackDays: 7,
   lookaheadDays: 120,
 
-  // How often the automatic sync runs: 1, 2, 4, 6, 8 or 12 hours.
+  // How often the automatic sync runs: 1, 2, 4, 6, 8 or 12 hours...
   syncEveryHours: 4,
+  // ...or every few days (1 to 30), early in the morning. Wins when set.
+  syncEveryDays: 0,
 
   // Remove calendar events whose Blackbaud item disappeared (or stopped
   // matching your filters). Only events this tool created are ever touched.
@@ -193,13 +195,18 @@ var DEFAULTS_ = {
     defaultKind: { minutes: 90, daysAhead: 7, spacing: 'even' },
   },
 
-  // AI study advice (what to study in each session, and how big each
-  // assessment is). Uses the script property OLLAMA_API_KEY.
+  // The AI (Ollama). Uses the script property OLLAMA_API_KEY.
   ai: {
     enabled: true,
     baseUrl: 'https://ollama.com',
     model: 'gpt-oss:20b',
-    // Assessments to ask about per sync (answers are remembered).
+    // Let the AI decide which Blackbaud items go on the calendar (the keyword
+    // rules fill in for items it hasn't judged). Your extraKeywords,
+    // extraExcludeKeywords and turned-off kinds still win.
+    chooseItems: true,
+    // Items to ask about per sync for chooseItems (answers are remembered).
+    maxItemsPerRun: 100,
+    // Assessments to ask about per sync for study advice (answers are remembered).
     maxPerRun: 5,
   },
 };

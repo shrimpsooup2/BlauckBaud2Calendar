@@ -116,7 +116,7 @@ test('grades sent by the bookmark change how much time each class gets', () => {
 });
 
 test('the AI names what to study, and never sees your grades', () => {
-  const { gas, env } = setUp({ study: { grades: { 'AP Biology': 81 } } });
+  const { gas, env } = setUp({ study: { grades: { 'AP Biology': 81 } }, ai: { chooseItems: false } });
   env.properties.OLLAMA_API_KEY = KEY;
   env.handleRequest = (url, options) => {
     const items = JSON.parse(JSON.parse(options.payload).messages[1].content.split('Assessments:\n')[1]);

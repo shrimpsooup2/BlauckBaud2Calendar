@@ -212,9 +212,20 @@ function applyPlan_(calendar, plan, tz, deadline) {
   return result;
 }
 
-function installTrigger_(hours) {
+/** Turns on the automatic sync: every syncEveryDays days (around 6 AM) or every syncEveryHours hours. */
+function installTrigger_(settings) {
   deleteSyncTriggers_();
-  ScriptApp.newTrigger('syncNow').timeBased().everyHours(hours).create();
+  var days = Number(settings.syncEveryDays) || 0;
+  var builder = ScriptApp.newTrigger('syncNow').timeBased();
+  if (days > 0) builder.everyDays(days).atHour(6).create();
+  else builder.everyHours(Number(settings.syncEveryHours)).create();
+}
+
+function syncIntervalText_(settings) {
+  var days = Number(settings.syncEveryDays) || 0;
+  if (days > 0) return days === 1 ? 'every day' : 'every ' + days + ' days';
+  var hours = Number(settings.syncEveryHours);
+  return hours === 1 ? 'every hour' : 'every ' + hours + ' hours';
 }
 
 /** Removes the automatic-sync trigger(s); returns how many there were. */

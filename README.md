@@ -182,6 +182,26 @@ along with the secret built into your bookmark. Keep the bookmark private. If it
 | `study.reminderMinutes` | `10` | Popup reminder before each session (`0` for none). |
 | `ai.model` | `'gpt-oss:20b'` | The Ollama model to use. `checkAi` lists the ones you can use. |
 | `ai.enabled` | `true` | `false` turns the AI off. |
+| `ai.chooseItems` | `true` | Let the AI decide which Blackbaud items go on the calendar (see below). |
+| `ai.maxItemsPerRun` | `100` | Most items sent to the AI for choosing in one sync; the rest wait for the next one. |
+
+### Letting the AI choose what goes on your calendar
+
+Keyword rules can't tell a "Chapter 5 Checkpoint" from "Chapter 5 notes". With an Ollama key set up,
+the AI reads each Blackbaud item (its title, Blackbaud type and description) and decides whether it
+is a test, quiz, project, essay, presentation or lab, or nothing to put on the calendar. Preview and
+the sync log show each decision with a short reason, like `[AI says test: graded checkpoint]`, and
+`showAiTranscript` shows the whole conversation.
+
+- Each item is judged once and the answer remembered, so later syncs only ask about new or changed
+  items. Syncing often doesn't use up more of your AI allowance.
+- Items that show up 4 or more times with the same title, like daily class meetings, are left to the
+  keyword rules. So is anything the AI hasn't judged yet (no key, a usage limit, or more than
+  `ai.maxItemsPerRun` new items). If there's a backlog, run `syncNow` again to work through it.
+- Your own rules win over the AI: titles with a word from `extraExcludeKeywords` are always
+  skipped, words you add with a kind's `extraKeywords` always count as that kind, and kinds you turn
+  off stay off.
+- Set `ai.chooseItems: false` to go back to the keyword rules only.
 
 ## Customizing
 
@@ -200,7 +220,7 @@ var SETTINGS = {
   },
 
   extraExcludeKeywords: ['bell ringer'],  // never sync titles containing these
-  syncEveryHours: 2,                      // 1, 2, 4, 6, 8 or 12
+  syncEveryDays: 3,                       // or syncEveryHours: 1, 2, 4, 6, 8 or 12
   reminderTime: '07:30',                  // reminders go off at 7:30 AM
 };
 ```
@@ -209,7 +229,8 @@ var SETTINGS = {
 | --- | --- | --- |
 | `calendarName` | `'Blackbaud Assessments'` | The Google Calendar to fill. It's created if it doesn't exist. |
 | `lookbackDays` / `lookaheadDays` | `7` / `120` | Sync items due from 7 days ago up to 120 days ahead. |
-| `syncEveryHours` | `4` | How often to check Blackbaud. Run `setup` again after changing it. |
+| `syncEveryHours` | `4` | How often to check Blackbaud, in hours. Run `setup` again after changing it. |
+| `syncEveryDays` | not set | Check every few days instead (1 to 30), around 6 AM. Wins over `syncEveryHours`. |
 | `reminderTime` | `'16:00'` | Time of day reminders go off. |
 | `categories` | see below | Turn kinds on or off, and change their keywords, colors, icons and reminders. |
 | `extraExcludeKeywords` | `[]` | More words that mean "don't sync this". |
@@ -311,9 +332,10 @@ bookmark, in case the bookmark code changed too.
 ## Privacy
 
 Everything runs inside your own Google account. The script talks to your Blackbaud feed, your Google
-Calendar and, if you turn on the study planner's AI, Ollama. Ollama gets each assessment's kind,
-class, title, due date and description, and nothing else: not your grades, your feed link or your
-calendar. Grades from the bookmark are stored in the script's properties, in your Google account.
+Calendar and, if you set up an Ollama key, Ollama. To choose what goes on your calendar, Ollama gets
+each Blackbaud item's title, Blackbaud type, due date and the start of its description; for study
+advice, each assessment's kind, class, title, due date and description. It never gets your grades,
+your feed link or your Google Calendar. Grades from the bookmark are stored in the script's properties, in your Google account.
 The feed link and the API key are never written to logs or error messages. The tool only edits or
 deletes events it created itself (they carry a hidden tag), so your other events are safe.
 
